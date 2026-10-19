@@ -329,7 +329,7 @@ def scan_nsps(nsp_dir, info=None):
     def group(tid):
         low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
         app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
-        return fams.setdefault(app, {'base': None, 'updates': [], 'dlc': [], 'xci_update_version': None}), low
+        return fams.setdefault(app, {'base': None, 'updates': [], 'dlc': [], 'xci_update_version': None, 'xci_update_v': None}), low
     for p in sorted(nsp_dir.glob('*.nsp')):
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
@@ -350,6 +350,9 @@ def scan_nsps(nsp_dir, info=None):
             if f['base'] is not None: raise BuildError(f'more than one base game for {tid & ~0xFFF:016X}: {f["base"].name}, {p.name}')
             f['base'] = p
             if meta and meta.get('update_version'): f['xci_update_version'] = meta['update_version']
+            if meta and meta.get('update_v'):
+                try: f['xci_update_v'] = int(meta['update_v'])
+                except ValueError: pass
         elif low == 0x800: f['updates'].append((version_of(p), p))
         else: f['dlc'].append((tid, version_of(p), p))
     if len(fams) == 1 and len(unknown) == 1 and next(iter(fams.values()))['base'] is None:   # a base game converted from a cartridge may have neither tags nor a ticket; build IDs are checked afterwards
@@ -372,9 +375,9 @@ def pick_nsps(fam, versions, g=None):
         n = int(ver[1:])
         upd = [u for v, u in fam['updates'] if v == n] or [u for v, u in fam['updates'] if v is None and len(fam['updates']) == 1]   # without a version in the file name only a single update is accepted; build IDs are checked afterwards
         if not upd:
-            xv = fam.get('xci_update_version'); want = builds.get(ver, {}).get('display')
-            if xv and (not want or xv == want):
-                say(f'update {ver}: the XCI\'s update partition ({xv})'); out[ver] = (fam['base'], None); continue
+            xv = fam.get('xci_update_version'); xvv = fam.get('xci_update_v'); want = builds.get(ver, {}).get('display')
+            if xv and ((xvv == n) if xvv else (not want or xv == want)):
+                say(f'update {ver}: the XCI\'s merged patch ({xv})'); out[ver] = (fam['base'], None); continue
             raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
         say(f'update {ver}: {upd[0].name}'); out[ver] = (fam['base'], upd[0])
     return out

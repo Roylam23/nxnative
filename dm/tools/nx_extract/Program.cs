@@ -11,10 +11,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using LibHac.Common;
 using LibHac.Common.Keys;
 using LibHac.Fs;
+using LibHac.Ncm;
+using LibHac.Tools.Ncm;
 using LibHac.Fs.Fsa;
 using LibHac.FsSystem;
 using LibHac.Spl;
@@ -113,8 +116,8 @@ static class P {
     }
     static Nca Pick(List<Nca> l, NcaContentType t) { foreach (Nca n in l) if (n.Header.ContentType == t) return n; return null; }
 
-    // ---- XCI: the Secure partition holds the base NCAs, the Update partition the update NCAs, the Normal partition the tickets ----
-    sealed class XciContent { public List<Nca> Base; public List<Nca> Update; public List<Nca> SystemUpdate; }
+    // ---- XCI: the Secure partition holds the base NCAs, and in a merged cartridge image the patch and DLC NCAs too. The Update partition normally holds a system update.
+    sealed class XciContent { public List<Nca> Base; public List<Nca> Update; public List<Nca> SystemUpdate; public uint BaseVersion; public uint UpdateVersion; }
     static bool IsXci(string path) => path.EndsWith(".xci", StringComparison.OrdinalIgnoreCase);
 
     static List<Nca> OpenPackage(KeySet ks, string path, bool update, out List<Nca> xciUpdate) {
@@ -129,33 +132,58 @@ static class P {
         // The Xci and its partitions keep the LocalStorage alive through their storages; do not dispose it while NCAs are in use.
         var xci = new Xci(ks, new LocalStorage(path, FileAccess.Read));
         if (xci.HasPartition(XciPartitionType.Normal)) ImportTickets(ks, xci.OpenPartition(XciPartitionType.Normal));
-        List<Nca> b = ReadNcas(ks, xci, XciPartitionType.Secure);
-        List<Nca> u = null, sys = null;
-        if (xci.HasPartition(XciPartitionType.Update)) {
-            List<Nca> list = ReadNcas(ks, xci, XciPartitionType.Update);
-            if (list.Count > 0) {
-                Nca baseProg = Pick(b, NcaContentType.Program), updProg = Pick(list, NcaContentType.Program);
-                // A gamecard's Update partition is normally the system update. A game update's Program NCA carries the base title ID (the update NSP does too);
-                // accept the ...800 form as well. A system update's Program has an unrelated title ID.
-                if (baseProg != null && updProg != null &&
-                    (updProg.Header.TitleId == baseProg.Header.TitleId ||
-                     ((updProg.Header.TitleId & ~0xFFFul) == (baseProg.Header.TitleId & ~0xFFFul) && (updProg.Header.TitleId & 0xFFF) == 0x800))) u = list;
-                else sys = list;
-            }
+        Dictionary<string, Nca> all = ReadNcas(ks, xci, XciPartitionType.Secure);
+        var (b, bv, u, uv) = SplitByCnmt(all);
+        if (b == null) b = all.Values.Where(n => n.Header.ContentType == NcaContentType.Program).ToList();   // no CNMT: fall back to every Program
+        List<Nca> sys = null;
+        if (u == null && xci.HasPartition(XciPartitionType.Update)) {
+            Dictionary<string, Nca> upd = ReadNcas(ks, xci, XciPartitionType.Update);
+            var (ub, ubv, uu, uuv) = SplitByCnmt(upd);
+            if (uu != null) { u = uu; uv = uuv; }
+            else if (upd.Count > 0) sys = upd.Values.ToList();
         }
-        return new XciContent { Base = b, Update = u, SystemUpdate = sys };
+        return new XciContent { Base = b, Update = u, SystemUpdate = sys, BaseVersion = bv, UpdateVersion = uv };
     }
 
-    static List<Nca> ReadNcas(KeySet ks, Xci xci, XciPartitionType type) {
-        var ncas = new List<Nca>();
+    static Dictionary<string, Nca> ReadNcas(KeySet ks, Xci xci, XciPartitionType type) {
+        var ncas = new Dictionary<string, Nca>(StringComparer.OrdinalIgnoreCase);
         XciPartition p = xci.OpenPartition(type);
         foreach (DirectoryEntryEx e in p.EnumerateEntries("*", SearchOptions.Default)) {
             if (e.Type == DirectoryEntryType.Directory || !e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) continue;
             using var f = new UniqueRef<IFile>();
             p.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-            ncas.Add(new Nca(ks, f.Release().AsStorage()));
+            ncas[Path.GetFileNameWithoutExtension(e.Name)] = new Nca(ks, f.Release().AsStorage());   // <nca id>.nca or <nca id>.cnmt.nca
         }
         return ncas;
+    }
+
+    // A merged XCI's Secure partition holds the Application and Patch NCAs side by side; their CNMTs say which Program/Control belongs to which.
+    static (List<Nca> basePkg, uint baseVer, List<Nca> patchPkg, uint patchVer) SplitByCnmt(Dictionary<string, Nca> all) {
+        List<Nca> b = null, u = null; uint bv = 0, uv = 0;
+        foreach (var kv in all) {
+            if (!kv.Key.EndsWith(".cnmt", StringComparison.OrdinalIgnoreCase)) continue;
+            Cnmt c; try { c = ReadCnmt(kv.Value); } catch { continue; }
+            if (c == null) continue;
+            var ids = new HashSet<string>(c.ContentEntries.Select(e => Convert.ToHexString(e.NcaId).ToLowerInvariant()));
+            var pkg = ids.Select(id => all.TryGetValue(id, out Nca n) ? n : null).Where(n => n != null).ToList();
+            if (pkg.Count == 0) continue;
+            if (c.Type == ContentMetaType.Application && c.TitleVersion.Version >= bv) { b = pkg; bv = c.TitleVersion.Version; }
+            else if (c.Type == ContentMetaType.Patch && c.TitleVersion.Version >= uv) { u = pkg; uv = c.TitleVersion.Version; }
+        }
+        return (b, bv, u, uv);
+    }
+
+    static Cnmt ReadCnmt(Nca meta) {
+        IFileSystem fs = meta.OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.None);
+        foreach (DirectoryEntryEx x in fs.EnumerateEntries("*", SearchOptions.Default)) {
+            if (!x.Name.EndsWith(".cnmt", StringComparison.OrdinalIgnoreCase)) continue;
+            using var f = new UniqueRef<IFile>();
+            fs.OpenFile(ref f.Ref, x.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+            f.Get.GetSize(out long n).ThrowIfFailure();
+            var bytes = new byte[n]; f.Get.Read(out _, 0, bytes, ReadOption.None).ThrowIfFailure();
+            return new Cnmt(new MemoryStream(bytes));
+        }
+        return null;
     }
 
     static void ImportTickets(KeySet ks, XciPartition p) {
@@ -176,23 +204,28 @@ static class P {
         List<Nca> xciUpdate = xci?.Update;
         Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base game");
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}");
-        Nca ctrl = Pick(basePkg, NcaContentType.Control);
-        if (ctrl != null) {
-            byte[] nacp = Nacp(ctrl);
-            Console.WriteLine($"version {VersionOf(nacp)}");
+        if (xci != null) {
+            Console.WriteLine($"base_v {xci.BaseVersion}");
+            if (xci.Update != null) Console.WriteLine($"update_v {xci.UpdateVersion}");
+        }
+        Nca baseCtrl = Pick(basePkg, NcaContentType.Control);
+        if (baseCtrl != null) {
+            byte[] nacp = Nacp(baseCtrl);
+            Console.WriteLine($"base_version {VersionOf(nacp)}");
             Console.WriteLine($"name {TitleName(nacp)}");
         }
-        if (xciUpdate != null) {
-            Nca updProg = Pick(xciUpdate, NcaContentType.Program);
-            if (updProg != null) {
-                Console.WriteLine($"update {updProg.Header.TitleId:x16}");
-                Nca uctrl = Pick(xciUpdate, NcaContentType.Control);
-                if (uctrl != null) {
-                    byte[] nacp = Nacp(uctrl);
-                    Console.WriteLine($"update_version {VersionOf(nacp)}");
-                    Console.WriteLine($"update_name {TitleName(nacp)}");
-                }
-            }
+        Nca updProg = xciUpdate != null ? Pick(xciUpdate, NcaContentType.Program) : null;
+        Nca uctrl = xciUpdate != null ? Pick(xciUpdate, NcaContentType.Control) : null;
+        if (uctrl != null) {
+            byte[] nacp = Nacp(uctrl);
+            Console.WriteLine($"version {VersionOf(nacp)}");
+            Console.WriteLine($"update_version {VersionOf(nacp)}");
+        } else if (baseCtrl != null) {
+            Console.WriteLine($"version {VersionOf(Nacp(baseCtrl))}");
+        }
+        if (updProg != null) {
+            Console.WriteLine($"update {updProg.Header.TitleId:x16}");
+            if (uctrl != null) Console.WriteLine($"update_name {TitleName(Nacp(uctrl))}");
         } else if (xci?.SystemUpdate != null) {
             Nca sysProg = Pick(xci.SystemUpdate, NcaContentType.Program);
             if (sysProg != null) Console.WriteLine($"system_update {sysProg.Header.TitleId:x16}");

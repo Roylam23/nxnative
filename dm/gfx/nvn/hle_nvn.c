@@ -1480,7 +1480,12 @@ NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b, NVNmemoryPool *p, ptr
 NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b) {
     const buf_builder_t *bb = (const buf_builder_t *)b;
     if (!bb->pool || !bb->pool->mem) { LOG("[RED] BufferInitialize: pool has no storage (pool %p flags %#x offset %#llx size %#llx)", (const void *)bb->pool, bb->pool ? bb->pool->flags : 0, (unsigned long long)bb->off, (unsigned long long)bb->size); return 0; }
-    if ((uint64_t)bb->off + bb->size > bb->pool->size) LOG("[RED] BufferInitialize: past the end of the pool (offset %#llx size %#llx pool %#llx)", (unsigned long long)bb->off, (unsigned long long)bb->size, (unsigned long long)bb->pool->size);
+    if ((uint64_t)bb->off + bb->size > bb->pool->size) {
+        LOG("[RED] BufferInitialize: past the end of the pool (offset %#llx size %#llx pool %#llx mem=%p flags=%#x caller=%p)",
+            (unsigned long long)bb->off, (unsigned long long)bb->size, (unsigned long long)bb->pool->size,
+            (void *)bb->pool->mem, bb->pool->flags, __builtin_return_address(0));
+        if (getenv("DM_NVN_STRICT_BUFFER")) return 0;   // diagnostic: let the game see the failure instead of pointing the buffer past its pool
+    }
     *(buf_t *)buf = (buf_t){MAGIC('B', 'U', 'F', 0), bb->pool, bb->off, bb->size};
     OLOG("BufferInitialize %p pool=%p off=%#llx size=%#llx", (void *)buf, (const void *)bb->pool, (unsigned long long)bb->off, (unsigned long long)bb->size);
     return 1;
