@@ -4,6 +4,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
+#include <stdatomic.h>
 #include "dm.h"
 #include "dm_input.h"
 #include "dm_uiscreen.h"
@@ -17,6 +18,12 @@ __attribute__((constructor)) static void ui_shift_reg(void) { mtl_set_ui_rect_fn
 static CAMetalLayer *g_layer;
 static uint64_t g_btn;
 static int g_w, g_a, g_s, g_d;
+static int g_rx, g_ry;          // right stick, driven by the mouse when DM_MOUSE_STICK is set (camera in 3D games)
+static int g_mouse_stick;
+static NSPoint g_mouse_down;
+static _Atomic uint64_t g_presents;      // DM_OVERLAY: presents and the last present interval (ms), shown in the window title
+static _Atomic double g_last_iv_ms;
+void dm_perf_present(double iv_ms) { atomic_fetch_add(&g_presents, 1); atomic_store(&g_last_iv_ms, iv_ms); }   // strong definition for the graphics layer's weak hook
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 // The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
@@ -28,8 +35,9 @@ uint64_t front_game_res(int docked) {
 
 static void push(void) {
     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
-    dm_input_set(g_btn, lx, ly, 0, 0);
+    dm_input_set(g_btn, lx, ly, g_rx, g_ry);
 }
+static int clamp_stick(double v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : (int)v; }
 static int key_bit(unsigned short code) {
     switch (code) {
         case 38: return 0;  case 40: return 1;  case 32: return 2;  case 34: return 3;    // J K U I → A B X Y
@@ -65,6 +73,12 @@ void front_run(void (*guest)(void)) {
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
         win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
+        if (getenv("DM_OVERLAY")) {   // DM_OVERLAY=1: FPS and present interval in the window title
+            [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+                (void)t; static uint64_t last; uint64_t n = atomic_load(&g_presents); double iv = atomic_load(&g_last_iv_ms);
+                win.title = [NSString stringWithFormat:@"%@ — %.0f fps  %.2f ms", @DM_GAME_NAME, (double)(n - last), iv]; last = n;
+            }];
+        }
         NSView *v = win.contentView;
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
@@ -80,9 +94,20 @@ void front_run(void (*guest)(void)) {
             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
             return nil;   // Swallow it to avoid the system beep
         }];
-        // Mouse as a single-point touchscreen (for testing touch on the local machine, front.h dm_touch_set): left button down / drag = finger 0 at the normalized coordinates, release = lifted
+        // Mouse: by default a single-point touchscreen (for testing touch on the local machine, front.h dm_touch_set); with DM_MOUSE_STICK=1 it is the right stick (camera in 3D games)
+        g_mouse_stick = getenv("DM_MOUSE_STICK") != NULL;
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;
+            if (g_mouse_stick) {   // virtual right stick: the press point is the center, the offset is the stick position, release recenters
+                if (e.type == NSEventTypeLeftMouseDown) { g_mouse_down = [v convertPoint:e.locationInWindow fromView:nil]; g_rx = g_ry = 0; push(); return nil; }
+                if (e.type == NSEventTypeLeftMouseDragged) {
+                    NSPoint p = [v convertPoint:e.locationInWindow fromView:nil];
+                    g_rx = clamp_stick((p.x - g_mouse_down.x) * 300);
+                    g_ry = clamp_stick(-(p.y - g_mouse_down.y) * 300);
+                    push(); return nil;
+                }
+                g_rx = g_ry = 0; push(); return nil;
+            }
             if (e.type == NSEventTypeLeftMouseUp) { dm_touch_set(NULL, 0); return nil; }
             NSPoint p = [v convertPoint:e.locationInWindow fromView:nil]; NSSize sz = v.bounds.size;
             if (sz.width <= 0 || sz.height <= 0) return e;

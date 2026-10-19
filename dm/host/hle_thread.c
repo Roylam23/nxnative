@@ -632,11 +632,7 @@ int svc_thread(int num, uint64_t *regs) {
     // Not only "whom did this SVC wake": when a higher-priority thread of the same core is already running (busy, not waiting, at the time of the signal), on hardware the calling thread does not get the CPU at all.
     // Metroid Dread: with the dispatcher thread busy, the main thread's "unlink the holders" request woke nobody, the object was freed right away, and the dispatcher later walked the freed holders in WaitAny and crashed
     if (me && on) {
-        uint64_t t0 = now_ns(); int w = 0;
-        if (me->yield_pending) {   // wake() set this: an unlock / signal woke a higher-priority thread pinned to this core. A sched_yield alone does not guarantee it runs before the guest continues.
-            struct timespec ts = {0, 50000}; nanosleep(&ts, 0); w = 1;
-        }
-        w |= dm_yield_to_core_peers(5000);
+        uint64_t t0 = now_ns(); int w = dm_yield_to_core_peers(5000);
         if (w) { if (w < 0) g_preempt_cap++; g_preempt_n++; g_preempt_ns += now_ns() - t0; }
     }
     if (me) me->yield_pending = 0;
