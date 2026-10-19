@@ -72,6 +72,8 @@ python3 -m pip install lz4 capstone fonttools
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
 
+The base game may be an **XCI** instead of an NSP; the update is still an NSP. An XCI's own Update partition normally holds a system update, not the game update.
+
 **3. Run the script:**
 
 ```

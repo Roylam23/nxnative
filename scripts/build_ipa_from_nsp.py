@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-# Unsigned IPA straight from the NSPs: identify the game (title ID → game profile dm/games/<id>/) → extract (nx_extract) → rewrite the code modules (patch_nso.py)
+# Unsigned IPA straight from the NSPs (or a base XCI plus the update NSP): identify the game (title ID → game profile dm/games/<id>/) → extract (nx_extract) → rewrite the code modules (patch_nso.py)
 #   → (profiles with shader_glslc_capture: capture the shaders the game compiles at run time, by booting it in the Mac host for a few seconds) → split out the shaders and check them against the profile's tables (shader_split.py)
 #   (a Vulkan game with shader_vk_capture, Super Mario Galaxy, boots the same way to capture the SPIR-V shaders it generates)
 #   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A Vulkan game (profile key graphics vulkan: Hades) skips the NVN shader steps: vk_shaders.py translates its SPIR-V shaders instead. A game with no matching profile is surveyed (<NSP folder>/<title ID>_survey/survey.md), then gets a provisional profile guessed from
 #   the survey (<NSP folder>/<title ID>_build/profile/<title ID>/, outside the repository, found through DM_GAMES_DIR) and a best-effort IPA that may not boot; SURVEY_ONLY / --survey-only stops after the survey.
 # Two ways to run it: open this file in Spyder and press F5 (it uses the values under "Settings" below; an empty NSP folder or prod.keys is asked for at run time);
-#   or in a terminal: python3 scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> [options] (values given on the command line override "Settings", -h lists every option;
+#   or in a terminal: python3 scripts/build_ipa_from_nsp.py <NSP folder or base XCI> -k <prod.keys> [options] (values given on the command line override "Settings", -h lists every option;
 #   without keyboard input a missing value is not asked for but reported as an error; exit code 0 on success, 1 on error, 130 when interrupted). Command-line options entered in Spyder's run configuration work the same way.
 # Uses only three things: this repository, a folder holding one game's NSPs (the base game plus the updates listed in the profile's shader_versions are required; DLC NSPs, when present, are packed too and unlock the add-on content already in the game), and prod.keys.
+# The base game may be an XCI instead of an NSP; the update is still an NSP (an XCI's Update partition normally holds a system update, not the game update).
 # Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, deleted after the IPA is built by default), aoc/ (each DLC's RomFS by index), tools/ (nx_extract, and the Mac host for a run-time shader capture), patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
 # The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. For Mario the first run takes about 35 minutes (mostly the shader libraries); later runs take about 10 (the shader libraries come from the cache). Key values are never printed.
@@ -16,7 +17,7 @@ import collections, ctypes, getpass, os, re, shlex, shutil, struct, subprocess, 
 from pathlib import Path
 
 # ---- Settings ----
-NSP_DIR = '/Volumes/T7/nsp/The Legend of Zelda Tears of the Kingdom/'                            # folder holding the NSPs (empty = ask at run time)
+NSP_DIR = '/Volumes/T7/nsp/The Legend of Zelda Tears of the Kingdom/'                            # folder holding the NSPs or the base XCI (empty = ask at run time)
 PROD_KEYS = '/Users/f2pgod/My Drive/Python_Scripts/nsp_check/prod.keys'                          # path of prod.keys (empty = ask at run time)
 PACKAGE = ''                            # version packed into the IPA (empty = the profile's package; Mario 'v327680' i.e. 1.2.1, or 'v0')
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder)
@@ -311,38 +312,70 @@ def version_of(path):
     return int(m.group(1)) if m else None
 
 
-def scan_nsps(nsp_dir):
-    """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}"""
+def xci_meta(nx, keys, path, env=None):   # nx_extract --info: title ID, display version and update partition version of an XCI
+    p = subprocess.run([str(nx), str(keys), '--info', str(path)], capture_output=True, text=True, env=env)
+    if p.returncode: raise BuildError(f'cannot read {path.name}: {(p.stderr or p.stdout).strip()}')
+    d = {}
+    for line in p.stdout.splitlines():
+        k, _, v = line.partition(' ')
+        if k: d[k] = v
+    return d
+
+
+def scan_nsps(nsp_dir, info=None):
+    """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)], 'xci_update_version': display}}
+    info(path) reads an XCI's title / version / update_version with nx_extract --info; None for an NSP-only folder."""
     fams, unknown = {}, []
+    def group(tid):
+        low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
+        app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
+        return fams.setdefault(app, {'base': None, 'updates': [], 'dlc': [], 'xci_update_version': None}), low
     for p in sorted(nsp_dir.glob('*.nsp')):
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
         tid = title_of(p)
         if tid is None: unknown.append(p); continue
-        low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
-        app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
-        f = fams.setdefault(app, {'base': None, 'updates': [], 'dlc': []})
+        f, low = group(tid)
         if low == 0: f['base'] = p
+        elif low == 0x800: f['updates'].append((version_of(p), p))
+        else: f['dlc'].append((tid, version_of(p), p))
+    for p in sorted(nsp_dir.glob('*.xci')):
+        if p.stat().st_size == 0:
+            say(f'skipping an empty file: {p.name}'); continue
+        meta = info(p) if info else None
+        tid = int(meta['title'], 16) if meta and meta.get('title') else title_of(p)
+        if tid is None: unknown.append(p); continue
+        f, low = group(tid)
+        if low == 0:
+            if f['base'] is not None: raise BuildError(f'more than one base game for {tid & ~0xFFF:016X}: {f["base"].name}, {p.name}')
+            f['base'] = p
+            if meta and meta.get('update_version'): f['xci_update_version'] = meta['update_version']
         elif low == 0x800: f['updates'].append((version_of(p), p))
         else: f['dlc'].append((tid, version_of(p), p))
     if len(fams) == 1 and len(unknown) == 1 and next(iter(fams.values()))['base'] is None:   # a base game converted from a cartridge may have neither tags nor a ticket; build IDs are checked afterwards
         next(iter(fams.values()))['base'] = unknown[0]
-    if not fams: raise BuildError(f'no NSP with a readable title ID in {nsp_dir}')
+    if not fams: raise BuildError(f'no NSP or XCI with a readable title ID in {nsp_dir}')
     if len(fams) > 1: raise BuildError('more than one game in the folder, keep one game per folder: ' + ', '.join(f'{t:016X}' for t in fams))
     app, fam = next(iter(fams.items()))
-    if fam['base'] is None: raise BuildError(f'no base game NSP found in {nsp_dir} (title ID {app:016X})')
+    if fam['base'] is None: raise BuildError(f'no base game NSP or XCI found in {nsp_dir} (title ID {app:016X})')
     return app, fam
 
 
-def pick_nsps(fam, versions):
-    """For each wanted version, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N"""
+def pick_nsps(fam, versions, g=None):
+    """For each wanted version, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N
+    An XCI base can carry its game update in its Update partition; it is used when no update NSP exists and its display version matches the profile's build row."""
     say(f'base: {fam["base"].name}')
+    builds = g.builds() if g else {}
     out = {}
     for ver in versions:
         if ver == 'v0': out[ver] = (fam['base'], None); continue
         n = int(ver[1:])
         upd = [u for v, u in fam['updates'] if v == n] or [u for v, u in fam['updates'] if v is None and len(fam['updates']) == 1]   # without a version in the file name only a single update is accepted; build IDs are checked afterwards
-        if not upd: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+        if not upd:
+            xv = fam.get('xci_update_version'); want = builds.get(ver, {}).get('display')
+            if xv and (not want or xv == want):
+                say(f'update {ver}: the XCI\'s update partition ({xv})'); out[ver] = (fam['base'], None); continue
+            raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
         say(f'update {ver}: {upd[0].name}'); out[ver] = (fam['base'], upd[0])
     return out
 
@@ -379,6 +412,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     F = pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
     R = [f'# Survey: {nacp.name(ex / "control.nacp") or "?"} ({app:016X})', '', f'- display version: {dv.group(1) if dv else "?"}', f'- base: `{fam["base"].name}` ({fam["base"].stat().st_size / 2**30:.2f} GB)']
     R += [f'- update: `{p.name}` (v{v}, {p.stat().st_size / 2**30:.2f} GB){" (used for this survey)" if p == upd else ""}' for v, p in ups]
+    if not ups and fam.get('xci_update_version'): R.append(f'- update: the XCI\'s update partition ({fam["xci_update_version"]})')
     R += [f'- DLC: `{p.name}` ({p.stat().st_size / 1024:.0f} KB{", licence only, no content" if p.stat().st_size < 1 << 20 else ""})' for _, _, p in fam['dlc']]
 
     # Code modules
@@ -420,7 +454,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     if extra: notes.append(f'modules besides main / sdk: {", ".join(f"{n} ({mods[n]["kind"]})" for n in extra)}; the provisional profile loads {G["modules"][0]} (load order main, subsdk*, sdk)')
     if rom['mags']['UnityFS'] or 'Unity IL2CPP' in F['markers']: notes.append('Unity: the shaders are Shader objects in UnityFS bundles and data.unity3d, which shader_split.py reads through unityfs.py (written for Unity 2020.3\'s Switch format; check other Unity versions first)')
     if F['glslc']: notes.append(f'main has {F["glslc"]} GLSLC compiler output magics (0x19866891): ' + ('the shaders are compiled into main (13 Sentinels, the KTGL games): shader_main_glslc on' if 'shader_main_glslc' in G else 'not its shaders, the RomFS has shader containers (Engage)'))
-    if not (rom['mags']['BNSH'] or rom['mags']['BAHS']) and not rom['mags']['UnityFS'] and not vulkan and 'shader_main_glslc' not in G:
+    if not (rom['mags']['BNSH'] or rom['mags']['BAHS'] or rom['mags']['bfsha']) and not rom['mags']['UnityFS'] and not vulkan and 'shader_main_glslc' not in G:
         notes.append('no BNSH / BAHS at the top level: the shaders are inside compressed or other containers or in main, and must be located first')
     major = {v.split('_')[0] for v in F['sdkver']}
     if not major: notes.append('no SDK version string found')
@@ -959,9 +993,9 @@ def parse_args(argv):
     """Command-line options: when given they override "Settings"; F5 in Spyder passes none, so "Settings" is used as is. -h shows the help"""
     import argparse
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
-        description='Build an unsigned IPA from a game\'s NSPs; a game with no profile is surveyed and gets a best-effort IPA from a provisional profile.',
+        description='Build an unsigned IPA from a game\'s NSPs (or a base XCI plus the update NSP); a game with no profile is surveyed and gets a best-effort IPA from a provisional profile.',
         epilog='example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
-    ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs (default: the NSP_DIR setting, else asked)')
+    ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs, or the base XCI (default: the NSP_DIR setting, else asked)')
     ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the profile\'s package)')
     ap.add_argument('-o', '--out', help='output IPA (default: <the profile\'s ipa> in the NSP folder)')
@@ -994,8 +1028,19 @@ def main(args=None):
     if not keys.is_file(): raise BuildError(f'no such file: {keys}')
     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
+    if 'DOTNET_ROOT' not in env:   # the apphost finds the runtime through it; Homebrew keeps it under libexec, the cask install next to dotnet
+        dotnet = shutil.which('dotnet', path=env['PATH'])
+        if dotnet:
+            root = Path(dotnet).resolve(); libexec = root.parent.parent / 'libexec'
+            env['DOTNET_ROOT'] = str(libexec if libexec.is_dir() else root.parent)
+            os.environ['DOTNET_ROOT'] = env['DOTNET_ROOT']   # the tools' runs that do not pass env= inherit it
     py = sys.executable
-    app, fam = scan_nsps(nsp_dir)
+    info_nx = None
+    if any(p.stat().st_size for p in nsp_dir.glob('*.xci')):
+        if not shutil.which('dotnet', path=env['PATH']): raise BuildError('dotnet not found (.NET SDK 10)')
+        info_work = nsp_dir / '.xci_info'
+        info_nx = build_nx_extract(repo, info_work, info_work / 'logs', env)
+    app, fam = scan_nsps(nsp_dir, (lambda p: xci_meta(info_nx, keys, p, env)) if info_nx else None)
     force = args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
     if g is None:   # no game profile: survey, then (unless --survey-only) a provisional profile outside the repository and a best-effort IPA
@@ -1034,7 +1079,7 @@ def main(args=None):
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
     logs = work / 'logs'
     check_prereqs(env, xlate)
-    picks = pick_nsps(fam, versions)
+    picks = pick_nsps(fam, versions, g)
 
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
