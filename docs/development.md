@@ -268,6 +268,11 @@ The game's own work and its frame rate stay as they are; the host avoids work of
 - **Legacy method** (`DM_FRAME_STEP=legacy`, iPhone-tested at 60, kept for the A/B test): the stub steps by the measured frame time, capped at the target, and presents follow the cap. Game time that ran ahead after a short frame is paid back by the next frames (the idea from OJZen/totk-mobile); frames longer than 1/15 s are not caught up.
 - **Render scale:** `DM_RENDER_SCALE=0.5`–`1.0` multiplies the size of the 3D views (1600x896 docked) and fixes it there; the game's own dynamic resolution runs only at 1.0. The HUD keeps its resolution.
 
+**Rhythm Heaven Groove (`0100D9F01D474000`)**
+- **SDK 21:** the shared-font list and `pl::GetSharedFont` are host takeovers (6 slots, 3 with `DM_LEGACY`), and `fontll::LoadFont` forwards the size read from the sfnt tables. The audio command list uses the SDK 21 header; DeviceSink is ID 0x14.
+- **A16 legacy:** `build_ipa.py --legacy` uses 3 shared fonts, software BC to RGBA8 and a local ASTC cache (`--astc-cache`; generated from a `DM_NVN_BC_DUMP` run with `make_astc_cache.py`). The cache is not in the repository.
+- **Memory:** the 3.2 GB guest heap is virtual; the profile keeps `app_pool 0xCD500000`. `linear_cpu_no_access on` lets the font engine's linear R8 glyph textures use the guest buffer.
+
 **Monster Hunter Rise (`0100B04011742000`)**
 - **Engine:** Capcom's RE Engine, SDK 11.4.3, update 16.0.2 (v2228224, Sunbreak). The base game is an XCI (cartridge dump; nx_extract reads its secure partition), the update an NSP, and its 252 DLC NSPs are licences only. `main` has 125 MB of text: the rewriter puts its patch area right before the base (`BIG_TEXT`, a second pass with `DM_PATCH_FRONT`).
 - **Files and shaders:** everything sits in KPKA PAK archives, later patch PAKs overriding earlier ones by path hash. The 63,111 shaders are in SDF files (`shader_split.py` `kpka_jobs`), with combined and separate texture tables at once (profile key `nvn_septex_base`).
