@@ -1,6 +1,7 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
+#include <dlfcn.h>
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -251,6 +252,28 @@ static void relocate(module_t *m) {
             else { *where = v + r->r_addend; cnt[1]++; }       // ABS64 / GLOB_DAT
         }
     LOG("%s: reloc relative=%d relr=%u abs/glob=%d jump=%d%s", m->name, cnt[0], nrelr, cnt[1], cnt[2], nint ? " (some bound to an earlier module's definition)" : "");
+    if (!strcmp(m->name, "sdk") && !strcmp(m->build_id, "cff2680fe74cb7d8d13b525730d1a7fd")) {   // diagnostic: the PLT slots the SDK init abort goes through (Rhythm Heaven Groove SDK 21)
+        uint64_t *g = (uint64_t *)m->base;
+        LOG("sdk GOT: 0xb54270=%#llx (PLT 0x646900) 0xb5e6f8=%#llx (0x65b210) 0xb51730=%#llx (0x641280) 0xb50040=%#llx (0x63e4a0)",
+            (unsigned long long)g[0xb54270 / 8], (unsigned long long)g[0xb5e6f8 / 8], (unsigned long long)g[0xb51730 / 8], (unsigned long long)g[0xb50040 / 8]);
+    }
+    if (!strcmp(m->name, "main") && !strcmp(m->build_id, "03ff4a3bec96bde3a2e37ce3aa4caa0c")) {  // diagnostic: startup wait (main+0x501eb0) calls these two PLT slots
+        uint64_t *g = (uint64_t *)m->base;
+        LOG("main GOT: 0xda5320=%#llx (PLT 0xa66270) 0xda5328=%#llx (0xa66280)", (unsigned long long)g[0xda5320 / 8], (unsigned long long)g[0xda5328 / 8]);
+        Dl_info di;
+        if (dladdr((void *)(uintptr_t)g[0xda5320 / 8], &di)) LOG("main GOT a66270 symbol: %s (%s)", di.dli_sname ? di.dli_sname : "?", di.dli_fname ? di.dli_fname : "?");
+        if (dladdr((void *)(uintptr_t)g[0xda5328 / 8], &di)) LOG("main GOT a66280 symbol: %s (%s)", di.dli_sname ? di.dli_sname : "?", di.dli_fname ? di.dli_fname : "?");
+        {   // startup factory main+0x5017d0 uses these four PLTs
+            static const struct { uint64_t slot; const char *plt; } q[] = {
+                {0xda52e8, "a66200"}, {0xda52f0, "a66210"}, {0xda52f8, "a66220"}, {0xda5300, "a66230"}, {0xda5308, "a66240"}, {0xda5310, "a66250"}, {0xda5318, "a66260"}};
+            for (unsigned i = 0; i < sizeof q / sizeof q[0]; i++) {
+                uint64_t v = g[q[i].slot / 8]; module_t *mm = module_of((void *)(uintptr_t)v);
+                if (mm) LOG("main GOT %s=%#llx → %s+%#llx", q[i].plt, (unsigned long long)v, mm->name, (unsigned long long)(v - (uint64_t)(uintptr_t)mm->base));
+                else if (dladdr((void *)(uintptr_t)v, &di)) LOG("main GOT %s=%#llx → host %s", q[i].plt, (unsigned long long)v, di.dli_sname ? di.dli_sname : "?");
+                else LOG("main GOT %s=%#llx → ?", q[i].plt, (unsigned long long)v);
+            }
+        }
+    }
     if (nint > 8) LOG("%s: %d bound to an earlier module's definition in all", m->name, nint);
 }
 
