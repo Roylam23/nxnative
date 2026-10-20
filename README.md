@@ -72,12 +72,15 @@ python3 -m pip install lz4 capstone fonttools
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
 
-The base game may be an **XCI** instead of an NSP; the update is still an NSP. An XCI's own Update partition normally holds a system update, not the game update.
+The base game may be an **XCI** instead of an NSP; the update is still an NSP. An XCI's own Update partition normally holds a system update, not the game update. You can pass the base **XCI file itself**; the script looks for the update NSP in the XCI's folder.
 
 **3. Run the script:**
 
 ```
 python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
+
+# the same, with the base XCI file passed directly (the update NSP stays beside it)
+python3 scripts/build_ipa_from_nsp.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].xci" -k ~/keys/prod.keys
 ```
 
 The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the NSPs' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
@@ -89,7 +92,7 @@ The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). 
 **Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. Wonder, Engage, Dread, 13 Sentinels and Link's Awakening start in 2D, the other games in 3D. In Super Mario Galaxy, touches outside the controls move the pointer.
 A connected game controller hides the touch controls and keeps every button.
 
-- **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
+- **Game language** is English by default. The packing script bakes `DM_LANG=en-US` unless its `--env-file` sets `DM_LANG`; on the device, `Documents/env.txt` still overrides it. For Chinese, add `DM_LANG=zh-Hans` (Simplified) or `DM_LANG=zh-Hant` (Traditional) to `Documents/env.txt`.
 - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, send `log.txt` (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
 - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
