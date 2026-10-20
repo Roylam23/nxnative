@@ -103,6 +103,81 @@ HLE_FORCE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", "shared font siz
 HLE_FORCE("_ZN2nn2pl16IsRunningOnOunceEv", "running on Switch 2: no", unsigned, h_pl_IsOunce, void) { return 0; }
 // The Legend of Zelda: Breath of the Wild (SDK 20): asks for the shared fonts to be loaded before querying their state; the host's stand-in fonts are there on demand. VR mode (the Labo VR goggles): the host never enters VR; the query is always false, entering / leaving is a no-op
 HLE_FORCE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", "request shared font load; the stand-in font is always available, no-op", void, h_pl_ReqLoad, int type) { (void)type; }
+// SDK 21 (Rhythm Heaven Groove): the new list/priority form. main+0x501eb0 only tests bit 0 of the return as a bool (1 = ready), then the
+// game asks for the individual fonts through GetSharedFontAddress/Size, which the host already serves from its stand-in fonts.
+HLE_FORCE("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", "shared font list: the stand-in fonts are ready", uint32_t, h_pl_GetSharedFont, int *count, void *out, int size, uint64_t lang) {
+    (void)lang;
+    // The shared-font list is what supplies the Nintendo extension font (button icons, private-use U+E090..). The game's own
+    // text fonts are loaded separately from mesg/Font; entry 0 here is the extension font, so "Press A" has its A glyph.
+    int n = 0;
+    if (out && size > 0) {
+        uint8_t *e = (uint8_t *)out;
+        dm_guest_write_prepare(e, (size_t)size * 0x18);
+        memset(e, 0, (size_t)size * 0x18);
+        font_t std = font_get(0), ext = font_get(5);
+        // The game's layout indexes fonts by their position in this list. Fill every requested slot so a
+        // Traditional-Chinese layout's index cannot land on a null entry; the last slot is the button-icon font.
+        int slots = 6;   // standard: 6 shared fonts (iPhone 15 Pro+); legacy: 3 (A16, less Arial memory/load time)
+        const char *legacy = getenv("DM_LEGACY");
+        if (legacy && atoi(legacy)) slots = 3;
+        int use = size < slots ? size : slots;
+        for (int i = 0; i < use; i++) {
+            uint8_t *x = e + (size_t)i * 0x18;
+            if (i == use - 1 && ext.p) {
+                *(int32_t *)(x + 0) = 5;
+                *(uintptr_t *)(x + 8) = (uintptr_t)(ext.p + 8);
+                *(uintptr_t *)(x + 0x10) = ext.n - 8;
+                n++;
+            } else if (std.p) {
+                *(int32_t *)(x + 0) = 0;
+                *(uintptr_t *)(x + 8) = (uintptr_t)(std.p + 8);
+                *(uintptr_t *)(x + 0x10) = std.n - 8;
+                n++;
+            }
+        }
+    }
+    if (count) *count = n;
+    static int once; if (!once++) LOG("pl::GetSharedFont (%d shared fonts: CJK + extension)", n);
+    return 1;
+}
+// The game passes the decoded OpenType/TrueType data (after the 8-byte BFTTF header) and size 0; the size is implied by the
+// sfnt table directory. Return the end of the last table, or 0 when the data is not an sfnt.
+static uint32_t sfnt_size(const uint8_t *d) {
+    if (!d) return 0;
+    int ok = !memcmp(d, "OTTO", 4) || !memcmp(d, "\0\1\0\0", 4) || !memcmp(d, "true", 4) || !memcmp(d, "typ1", 4);
+    if (!ok) return 0;
+    uint32_t n = ((uint32_t)d[4] << 8) | d[5];
+    if (n == 0 || n > 512) return 0;
+    uint32_t end = 12 + 16 * n;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *r = d + 12 + 16 * i;
+        uint32_t off = ((uint32_t)r[8] << 24) | ((uint32_t)r[9] << 16) | ((uint32_t)r[10] << 8) | r[11];
+        uint32_t len = ((uint32_t)r[12] << 24) | ((uint32_t)r[13] << 16) | ((uint32_t)r[14] << 8) | r[15];
+        if (off > (1u << 30) || len > (1u << 30)) return 0;
+        if (off + len > end) end = off + len;
+    }
+    return end;
+}
+// The game passes a decoded TTF/OTF (after the 8-byte BFTTF header) and size 0; the SDK infers the size from the header.
+// Forward to the SDK's own LoadFont with that size; the game may still be filling the data while the call runs, so the
+// host only logs the first loads and never touches the font bytes.
+HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "font engine: LoadFont (SDK implementation)", uint32_t, h_font_Load, void *self, const char *name, const void *data, uint32_t size, uint32_t flags) {
+    module_t *sdk = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sdk = &g_mod[i]; break; }
+    // The forwarded LoadFont offset belongs to the Rhythm Heaven Groove SDK build; never call it on another build (dm/games/README.md).
+    if (!sdk || strcmp(sdk->build_id, "cff2680fe74cb7d8d13b525730d1a7fd")) {
+        static int once; if (!once++) LOG("[YELLOW] fontll::LoadFont: sdk build %s has no known LoadFont offset; returning 0", sdk && sdk->build_id[0] ? sdk->build_id : "(unknown)");
+        return 0;
+    }
+    uint32_t (*load)(void *, const char *, const void *, uint32_t, uint32_t) = (void *)((uintptr_t)sdk->base + 0x375e20);
+    uint32_t sfnt = sfnt_size((const uint8_t *)data);
+    static int n; int show = n++ < 80;
+    if (show) LOG("fontll::LoadFont #%d '%s' data=%p size=%u sfnt=%u", n, name && (uintptr_t)name > 0x10000 ? name : "?", data, size, sfnt);
+    uint32_t r = load(self, name, data, sfnt ? sfnt : size, flags);
+    if (show) LOG("fontll::LoadFont #%d → %#x name='%s'", n, r, name && (uintptr_t)name > 0x10000 ? name : "?");
+    return r;
+}
+// SDK 21 fontll: the layout factory selects the game's fonts by the names LoadFont wrote into its name buffers; SetFont
+// and the glyph queries are the SDK's own and are left alone.
 HLE_FORCE("_ZN2nn2pl8IsVrModeEv", "VR mode: no", unsigned, h_pl_IsVr, void) { return 0; }
 HLE_FORCE("_ZN2nn2pl11BeginVrModeEv", "enter VR mode (through am); the host does not", void, h_pl_BeginVr, void) { LOG("pl::BeginVrMode (the host does not enter VR)"); }
 HLE_FORCE("_ZN2nn2pl9EndVrModeEv", "leave VR mode (through am)", void, h_pl_EndVr, void) {}
