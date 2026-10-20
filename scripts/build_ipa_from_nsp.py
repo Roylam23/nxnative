@@ -23,6 +23,8 @@ PACKAGE = ''                            # version packed into the IPA (empty = t
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder)
 APP_NAME = ''                           # app name on the home screen (empty = the game name in the base NSP)
 BUNDLE_ID = ''                          # the app's bundle ID (empty = org.nxnative.<base game title ID in lowercase>)
+LEGACY = False                          # build the A16 / iPhone 14 Pro Max variant: software BC + ASTC cache + 3 shared fonts + a .legacy bundle ID
+ASTC_CACHE = ''                         # legacy build: ASTC cache directory (empty = <id>_build/astc-cache)
 KEEP_EXTRACTED = False                  # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files)
 DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
 SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
@@ -454,7 +456,8 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     notes = []
     if not vulkan and 'nvnBootstrapLoader' not in mods['main']['imports']: notes.append('main imports neither nvnBootstrapLoader nor Vulkan functions: the host implements only NVN and Vulkan')
     if vulkan: notes.append(f'{G["graphics"][1]}; the NVN shader steps are skipped' + (', and its shaders are captured by booting it on the Mac (no SPIR-V file in the RomFS)' if 'shader_vk_capture' in G else ''))
-    if extra: notes.append(f'modules besides main / sdk: {", ".join(f"{n} ({mods[n]["kind"]})" for n in extra)}; the provisional profile loads {G["modules"][0]} (load order main, subsdk*, sdk)')
+    mods_desc = ', '.join(f"{n} ({mods[n]['kind']})" for n in extra)
+    if extra: notes.append(f'modules besides main / sdk: {mods_desc}; the provisional profile loads {G["modules"][0]} (load order main, subsdk*, sdk)')
     if rom['mags']['UnityFS'] or 'Unity IL2CPP' in F['markers']: notes.append('Unity: the shaders are Shader objects in UnityFS bundles and data.unity3d, which shader_split.py reads through unityfs.py (written for Unity 2020.3\'s Switch format; check other Unity versions first)')
     if F['glslc']: notes.append(f'main has {F["glslc"]} GLSLC compiler output magics (0x19866891): ' + ('the shaders are compiled into main (13 Sentinels, the KTGL games): shader_main_glslc on' if 'shader_main_glslc' in G else 'not its shaders, the RomFS has shader containers (Engage)'))
     if not (rom['mags']['BNSH'] or rom['mags']['BAHS'] or rom['mags']['bfsha']) and not rom['mags']['UnityFS'] and not vulkan and 'shader_main_glslc' not in G:
@@ -998,7 +1001,7 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
         description='Build an unsigned IPA from a game\'s NSPs (or a base XCI plus the update NSP); a game with no profile is surveyed and gets a best-effort IPA from a provisional profile.',
         epilog='example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
-    ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs, or the base XCI (default: the NSP_DIR setting, else asked)')
+    ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs/base XCI, or a base .xci file (the update NSP stays beside it) (default: the NSP_DIR setting, else asked)')
     ap.add_argument('-k', '--keys', help='path of prod.keys (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the profile\'s package)')
     ap.add_argument('-o', '--out', help='output IPA (default: <the profile\'s ipa> in the NSP folder)')
@@ -1006,6 +1009,8 @@ def parse_args(argv):
     ap.add_argument('--bundle-id', help='the app\'s bundle ID (default: org.nxnative.<base game title ID in lowercase>)')
     ap.add_argument('--keep-extracted', action='store_true', help='keep the extracted game files after the IPA is built')
     ap.add_argument('--env-file', help='environment switches for a diagnostic build (one KEY=VALUE per line)')
+    ap.add_argument('--legacy', action='store_true', help='build the A16 / iPhone 14 Pro Max variant: software BC + ASTC cache + 3 shared fonts, app name suffix Legacy and .legacy bundle ID')
+    ap.add_argument('--astc-cache', help='legacy build: ASTC cache directory (default: <NSP folder>/<title ID>_build/astc-cache)')
     ap.add_argument('--survey-only', action='store_true', help='a game with no profile: only the survey, no provisional profile and no IPA')
     ap.add_argument('--allow-damaged', action='store_true', help='a damaged NSP (files failing the NCA hash check): write them as read and go on instead of stopping')
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
@@ -1025,8 +1030,12 @@ def main(args=None):
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
     global pg; import profile_guess as pg   # dm/games: a provisional profile's keys from the game files and from the heap check
     sys.path.insert(0, str(repo / 'dm/tools')); global nacp; import nacp   # the game name in the NSP's control data
-    nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder: ', 'the NSP folder'))).resolve()
+    nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder or base .xci: ', 'the NSP folder or base XCI'))).resolve()
     keys = Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
+    # A base XCI may be passed directly; the update NSP (if any) stays in the same folder.
+    if nsp_dir.is_file():
+        if nsp_dir.suffix.lower() != '.xci': raise BuildError(f'not a folder or a base .xci: {nsp_dir}')
+        nsp_dir = nsp_dir.parent
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if not keys.is_file(): raise BuildError(f'no such file: {keys}')
     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
@@ -1106,9 +1115,19 @@ def main(args=None):
     app_name = args.app_name or APP_NAME or nacp.name(base / 'control.nacp')
     if not app_name: raise BuildError(f'no game name in the base extraction ({base / "control.nacp"}; an older extraction did not save it: delete extract/ and run again, or give --app-name)')
     bundle_id = args.bundle_id or BUNDLE_ID or f'org.nxnative.{app:016x}'
+    legacy = bool(args.legacy or LEGACY)
+    astc = None
+    if legacy:
+        # A16 / iPhone 14 Pro Max: the same executable with DM_LEGACY=1 selects 3 shared fonts; the ASTC cache is uploaded
+        # instead of software-decoding BC to RGBA8. A distinct bundle ID lets it sit beside the iPhone 15 Pro+ build.
+        if not (args.out or OUT_IPA): out_ipa = out_ipa.with_name(out_ipa.stem + '-legacy' + out_ipa.suffix)
+        if not (args.bundle_id or BUNDLE_ID): bundle_id += '.legacy'
+        if not (args.app_name or APP_NAME): app_name += ' Legacy'
+        astc = Path(os.path.expanduser(args.astc_cache or ASTC_CACHE or str(work / 'astc-cache'))).resolve()
+        if not astc.is_dir(): raise BuildError(f'legacy build needs an ASTC cache (DM_NVN_BC_DUMP + make_astc_cache.py): {astc}')
     # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
     app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp')
-    say(f'app name: {app_name}; version: {app_version or "1.0"}; bundle ID: {bundle_id}')
+    say(f'app name: {app_name}; version: {app_version or "1.0"}; bundle ID: {bundle_id}{" [legacy]" if legacy else ""}')
 
     patched = work / f'patched_{pkg_ver}'
     rewrite(py, repo, game / 'ExeFS', patched, env, logs, g)
@@ -1135,7 +1154,21 @@ def main(args=None):
     if icon: ipa_env['DM_ICON'] = str(icon); say(f'app icon: {icon}')
     else: say('[RED] no game icon in the extraction (an older extraction did not save it: delete extract/ and run again); the home-screen icon will be blank')
     env_file = args.env_file or DM_ENV_FILE
-    if env_file: ipa_env['DM_ENV_FILE'] = str(Path(os.path.expanduser(env_file)).resolve())
+    env_lines = []
+    if env_file:
+        try: env_lines = [l for l in Path(os.path.expanduser(env_file)).read_text().splitlines() if l.strip() and not l.lstrip().startswith('#')]
+        except OSError: pass
+    if not any(l.split('=', 1)[0].strip() == 'DM_LANG' for l in env_lines):
+        env_lines.insert(0, 'DM_LANG=en-US')   # English is the build default; the env file or Documents/env.txt can override it
+    if legacy:
+        lines = ['DM_NVN_BC7_UPLOAD=1', 'DM_NVN_BC_SOFTWARE=1', 'DM_LEGACY=1', 'DM_OPMODE=0'] + env_lines
+        le = work / 'legacy_env.txt'; le.write_text('\n'.join(lines) + '\n')
+        ipa_env['DM_ENV_FILE'] = str(le); ipa_env['DM_BC_ASTC'] = str(astc)
+        say(f'legacy env: {le}; ASTC cache: {astc}')
+    else:
+        le = work / 'env.txt'; le.write_text('\n'.join(env_lines) + '\n')
+        ipa_env['DM_ENV_FILE'] = str(le)
+        say(f'env: {le}')
     watch = IpaWatch(repo, work / 'ipa', game / 'RomFS', out_ipa)
     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "assemble Payload" line starts the stage "IPA pack"
     run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
