@@ -62,7 +62,7 @@ brew install --cask dotnet-sdk
 python3 -m pip install lz4 capstone fonttools
 ```
 
-**2. Put one game's NSPs in a folder**, base game (an NSP, or an XCI cartridge dump) and update (and any DLC):
+**2. Put one game's files in a folder**, base game (an NSP, or an XCI cartridge dump) and update (and any DLC), or keep a single base `.nsp` / `.xci` file:
 
 ```
 ~/Games/MarioWonder/
@@ -70,18 +70,19 @@ python3 -m pip install lz4 capstone fonttools
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
 
-The base game may be an **XCI** instead of an NSP; the update is still an NSP. An XCI's own Update partition normally holds a system update, not the game update. You can pass the base **XCI file itself**; the script looks for the update NSP in the XCI's folder.
+The base game may be an **NSP or an XCI**; the update is still an NSP. An XCI's own Update partition normally holds a system update, not the game update. Pass the folder, a base `.nsp`, or a base `.xci`; the script uses the file's folder, so put the update NSP (and any DLC) beside the base file.
 
 **3. Run the script:**
 
 ```
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
+python3 scripts/build_ipa.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
-# the same, with the base XCI file passed directly (the update NSP stays beside it)
-python3 scripts/build_ipa_from_nsp.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].xci" -k ~/keys/prod.keys
+# the same, with the base XCI or NSP file passed directly (the update NSP stays beside it)
+python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].xci" -k ~/keys/prod.keys
+python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].nsp" -k ~/keys/prod.keys
 ```
 
-The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the NSPs' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
+The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the game files' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
 
 **4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update).
 

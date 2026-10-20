@@ -18,7 +18,7 @@ Everything game-specific belongs here. Code reads the profile; it does not hard-
 | Shader tools (`shader_split.py`, `dmsh_chain.py`, `dmsh_build.py`, `dmsh_facts.py`) | `DM_GAME=<id>` | tables, `nvn_*`, `shader_*` keys |
 | Host (`make -C dm/host`, `dm/gfx/tests`) | `GAME=<id>` | `gen/<id>/game_profile.h`, generated from `game.tsv` by `game.py header` |
 | `dm/ios/tools/build_ipa.sh` | `GAME=<id>` | app name, bundle ID, IPA name, modules, RomFS marker, tables |
-| `scripts/build_ipa_from_nsp.py` | the NSPs' title ID | everything above. With no matching profile it writes a survey, then a provisional profile outside the repository and a best-effort IPA (`--survey-only` stops after the survey) |
+| `scripts/build_ipa.py` | the game files' title ID | everything above. With no matching profile it writes a survey, then a provisional profile outside the repository and a best-effort IPA (`--survey-only` stops after the survey) |
 
 None of them has a default game: without one they stop and list the profiles. To query a profile:
 - `python3 dm/games/game.py list` lists the profiles.
@@ -68,8 +68,8 @@ The translator (`dmsh_xlate/Program.cs`) still has Mario's texture / sampler bas
 
 ## Adding a game
 
-1. **Survey.** Run `scripts/build_ipa_from_nsp.py` on the game's NSP folder. Without a profile it extracts only the code modules and a RomFS list, then writes `<NSP folder>/<title ID>_survey/survey.md`. The survey covers modules and build IDs, SDK, engine and graphics API markers, RomFS containers, the rewrite-site census, and imports compared with the host hooks.
-   Unless told `--survey-only`, the script then writes a **provisional profile** to `<NSP folder>/<title ID>_build/profile/<title ID>/` (outside the repository) and carries on to a best-effort IPA. `dm/games/profile_guess.py` fills its `game.tsv` from the game files, each key under the reason for it (the survey lists them too):
+1. **Survey.** Run `scripts/build_ipa.py` on the game folder, or on a single base `.nsp` / `.xci` file. Without a profile it extracts only the code modules and a RomFS list, then writes `<game folder>/<title ID>_survey/survey.md`. The survey covers modules and build IDs, SDK, engine and graphics API markers, RomFS containers, the rewrite-site census, and imports compared with the host hooks.
+   Unless told `--survey-only`, the script then writes a **provisional profile** to `<game folder>/<title ID>_build/profile/<title ID>/` (outside the repository) and carries on to a best-effort IPA. `dm/games/profile_guess.py` fills its `game.tsv` from the game files, each key under the reason for it (the survey lists them too):
    - identity and name, the build row it found, the largest RomFS file as `romfs_marker`, big file types in `zip_store`, `shader_groups` by RomFS top-level folder, Mario's NVN values (Engage's texture base under Unity IL2CPP);
    - `graphics vulkan` when `main` imports Vulkan functions and not `nvnBootstrapLoader`, then `shader_vk_capture on` when the RomFS has no SPIR-V file;
    - `modules`: a subsdk is loaded only when `main` imports something from it that the host does not supply itself. Under the Vulkan layer NVIDIA's OpenGL / Vulkan drivers, the Vulkan loader and GLSLC are dropped; movie modules and a GLSLC that `main` calls stay;

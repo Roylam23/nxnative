@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Provisional game profiles: the profile keys a game's own files decide, for a game without a hand-made profile in dm/games (scripts/build_ipa_from_nsp.py writes them).
+# Provisional game profiles: the profile keys a game's own files decide, for a game without a hand-made profile in dm/games (scripts/build_ipa.py writes them).
 # facts_of(ExeFS, RomFS) reads the code modules (dynamic symbols, sizes, SDK strings) and the RomFS file headers (a romfs_manifest.tsv from nx_extract --manifest, or a RomFS folder);
 # guess(facts) turns the facts into profile keys, each with the reason written above it in game.tsv. Every rule was checked against the hand-made profiles; --check runs that comparison again.
 # mem_used needs the rewritten modules (mem_used below, after the rewrite). The alias / heap split of a game with virtual address memory that sets a heap needs its heap request:
@@ -188,7 +188,7 @@ def engine(F):   # keys that follow from the engine rather than from a general s
 
 
 def mem_used(patched, modules):
-    """mem_used from the rewritten modules (scripts/build_ipa_from_nsp.py, after the rewrite): SetHeapSize checks heap + image against the pool (hle_svc.c), the game asks for pool − used − bss,
+    """mem_used from the rewritten modules (scripts/build_ipa.py, after the rewrite): SetHeapSize checks heap + image against the pool (hle_svc.c), the game asks for pool − used − bss,
     so used memory must cover the image without its bss. None when the default 64 MB does (Age of Calamity: 66.6 MB of modules → 72 MB)"""
     total = big = 0
     for m in modules:
@@ -201,7 +201,7 @@ def mem_used(patched, modules):
     return need + 4 * MiB if need > 64 * MiB else None
 
 
-# ---- The heap check (scripts/build_ipa_from_nsp.py heap_check): host log lines → profile keys ----
+# ---- The heap check (scripts/build_ipa.py heap_check): host log lines → profile keys ----
 def heap_signals(log, g):
     """{key: (value, reason)} from a heap-check run's host log (hle_svc.c SetHeapSize); g is the profile the run used"""
     out = {}

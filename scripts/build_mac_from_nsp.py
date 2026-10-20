@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Package the Mac app for one game from the build folder made by build_ipa_from_nsp.py.
+"""Package the Mac app for one game from the build folder made by build_ipa.py.
 
 The Mac host (dm/host/dmhost) and the app bundle are rebuilt; the patched modules, Mac shader
-cache, profile and shared-font stand-ins are copied from <NSP folder>/<title ID>_build. The
+cache, profile and shared-font stand-ins are copied from <game folder>/<title ID>_build. The
 game's RomFS stays outside the app; data-dir.txt in the bundle points at the build folder.
 
-Usage: python3 scripts/build_mac_from_nsp.py "<NSP folder>" [--game ID] [--out-dir DIR]
+Usage: python3 scripts/build_mac_from_nsp.py "<game folder or .nsp/.xci>" [--game ID] [--out-dir DIR]
        [--app-name NAME] [--icon PATH] [--save save] [--lang en-US]
        [--skip-host] [--no-zip]
 """
@@ -73,7 +73,7 @@ def make_icon(src: Path, out: Path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('nsp_dir', nargs='?', help='folder holding the game NSP/XCI, or a base .xci file (default: NSP_DIR setting, else asked)')
+    ap.add_argument('nsp_dir', nargs='?', help='game folder, or a .nsp / .xci file (default: NSP_DIR setting, else asked)')
     ap.add_argument('--game', help='base game title ID (default: the only <title ID>_build in the NSP folder)')
     ap.add_argument('--out-dir', help='where the .app and README are written (default: <build>/mac-app)')
     ap.add_argument('--app-name', help='app name (default: APP_NAME setting)')
@@ -86,7 +86,7 @@ def main():
 
     nsp = Path(os.path.expanduser(a.nsp_dir or NSP_DIR or input('NSP folder or base .xci: '))).resolve()
     if nsp.is_file():
-        if nsp.suffix.lower() != '.xci': die(f'not a folder or a base .xci: {nsp}')
+        if nsp.suffix.lower() not in ('.nsp', '.xci'): die(f'not a folder or a .nsp/.xci file: {nsp}')
         nsp = nsp.parent   # the build folder is beside the base XCI
     if not nsp.is_dir(): die(f'not a folder: {nsp}')
     game, build = find_build(nsp, a.game or GAME)
@@ -97,7 +97,7 @@ def main():
     font = build / 'font'
     for p, what in ((profile / 'game.tsv', 'profile'), (romfs, 'RomFS'), (cache, 'Mac shader cache'),
                     (patched / 'main.patched.bin', 'patched main')):
-        if not p.exists(): die(f'{what} not found: {p}\n  run scripts/build_ipa_from_nsp.py on this folder or on the base .xci first (the IPA build creates it)')
+        if not p.exists(): die(f'{what} not found: {p}\n  run scripts/build_ipa.py on this folder, a base .nsp or a base .xci first (the IPA build creates it)')
     app_name = a.app_name or APP_NAME
     out_dir = Path(os.path.expanduser(a.out_dir or OUT_DIR or str(build / 'mac-app'))).resolve()
     save_name = a.save or SAVE

@@ -16,35 +16,36 @@ The README covers packing and playing. This page is for working on nxnative itse
 
 ## The packing script in detail
 
-`scripts/build_ipa_from_nsp.py` (`-h` lists every option):
+`scripts/build_ipa.py` (`-h` lists every option):
 
 ```
 # written to the Desktop with your own home-screen name
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys -o ~/Desktop/Mario.ipa --app-name "Mario Wonder"
+python3 scripts/build_ipa.py ~/Games/MarioWonder -k ~/keys/prod.keys -o ~/Desktop/Mario.ipa --app-name "Mario Wonder"
 
-# the base game as an XCI file passed directly; the update NSP stays in the same folder
-python3 scripts/build_ipa_from_nsp.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].xci" -k ~/keys/prod.keys
+# a base XCI or NSP file passed directly; the update NSP stays in the same folder
+python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].xci" -k ~/keys/prod.keys
+python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].nsp" -k ~/keys/prod.keys
 
 # pack Mario 1.0.0 instead of 1.2.1 (the folder still needs both NSPs: the shader tables cover both versions)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys -p v0
+python3 scripts/build_ipa.py ~/Games/MarioWonder -k ~/keys/prod.keys -p v0
 
 # delete the extracted game files after the IPA is built (they are kept by default, to skip extraction next time and to run the game on the Mac)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --no-keep-extracted
+python3 scripts/build_ipa.py ~/Games/MarioWonder -k ~/keys/prod.keys --no-keep-extracted
 
 # a diagnostic build with environment switches baked in (one KEY=VALUE per line)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --env-file diag_env.txt
+python3 scripts/build_ipa.py ~/Games/MarioWonder -k ~/keys/prod.keys --env-file diag_env.txt
 
 # a damaged NSP (files failing the NCA's hash check) stops the build after listing them; this packs those files as read
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --allow-damaged
+python3 scripts/build_ipa.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --allow-damaged
 
 # a game without a profile: survey, provisional profile (a heap check on the Mac when the game needs one), best-effort IPA
-python3 scripts/build_ipa_from_nsp.py ~/Games/NewGame -k ~/keys/prod.keys
+python3 scripts/build_ipa.py ~/Games/NewGame -k ~/keys/prod.keys
 
 # test the guesses on a game that has a profile: build from a provisional one (the IPA is named <ipa>-provisional.ipa)
-python3 scripts/build_ipa_from_nsp.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --provisional --allow-damaged
+python3 scripts/build_ipa.py ~/Games/MarioGalaxy -k ~/keys/prod.keys --provisional --allow-damaged
 ```
 
-In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `KEEP_EXTRACTED`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
+In Spyder, open the script, fill in the settings at the top (`GAME_PATH`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `KEEP_EXTRACTED`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
 
 What the script does:
 1. It finds the game profile from the title ID (the `[title ID]` in the file names, or the NSP's ticket; the update by its `[vN]` tag).
@@ -81,7 +82,7 @@ Each game has a profile in `dm/games/<id>/`:
 The shader tools pick a profile with `DM_GAME=<id>`; `make -C dm/host` and `build_ipa.sh` pick it with `GAME=<id>`. Profiles are named after the base game's title ID. There is no default game: without `GAME` / `DM_GAME` the tools stop and list the profiles. `python3 dm/games/game.py list` lists the profiles. Host code that relies on one build's fixed addresses checks that build's ID.
 
 To add a game:
-1. Run `scripts/build_ipa_from_nsp.py` on its NSP folder (or on the base XCI file, or the folder holding it, with the update NSP beside it). With no matching profile, it writes a survey to `<title ID>_survey/survey.md`. The survey covers the modules, SDK, engine, containers, rewrite sites, and the imports compared with the host's hooks. It then writes a provisional profile into `<title ID>_build/profile/<title ID>/` (outside the repository; tools find it through `DM_GAMES_DIR`) with the keys `dm/games/profile_guess.py` reads off the game files: the graphics API, the modules to load, where the shaders come from, the memory partition, SDK and engine presets. After the rewrite it sets `mem_used` from the rewritten modules and, for a game with virtual address memory that sets a heap, boots it on the Mac until its heap request (the heap check, a few seconds) to size the heap region. Then it generates the shader tables and chain header and packs a best-effort IPA that may not boot. `--survey-only` stops after the survey, `--no-heap-check` skips the heap check, and `--profile-out` puts the profile elsewhere. `--provisional` does all this for a game that has a profile, to test the guesses; `python3 dm/games/profile_guess.py --check` compares the static guesses with every profile. Details in [dm/games/README.md](../dm/games/README.md).
+1. Run `scripts/build_ipa.py` on its game folder, or on a single base `.nsp` / `.xci` file (the update NSP stays beside it). With no matching profile, it writes a survey to `<title ID>_survey/survey.md`. The survey covers the modules, SDK, engine, containers, rewrite sites, and the imports compared with the host's hooks. It then writes a provisional profile into `<title ID>_build/profile/<title ID>/` (outside the repository; tools find it through `DM_GAMES_DIR`) with the keys `dm/games/profile_guess.py` reads off the game files: the graphics API, the modules to load, where the shaders come from, the memory partition, SDK and engine presets. After the rewrite it sets `mem_used` from the rewritten modules and, for a game with virtual address memory that sets a heap, boots it on the Mac until its heap request (the heap check, a few seconds) to size the heap region. Then it generates the shader tables and chain header and packs a best-effort IPA that may not boot. `--survey-only` stops after the survey, `--no-heap-check` skips the heap check, and `--profile-out` puts the profile elsewhere. `--provisional` does all this for a game that has a profile, to test the guesses; `python3 dm/games/profile_guess.py --check` compares the static guesses with every profile. Details in [dm/games/README.md](../dm/games/README.md).
 2. Add a profile as described in [dm/games/README.md](../dm/games/README.md).
 3. Bring the game up following [docs/agents](agents/README.md): extraction, binary survey, a catalogue of host bring-up failures, graphics, and debugging recipes.
 
@@ -126,7 +127,7 @@ Notes on these steps:
 
 ## The Mac app
 
-`scripts/build_mac_from_nsp.py` packs the build folder's Mac host as an `.app` (and a `.zip` beside it), from either the NSP folder or the base XCI file:
+`scripts/build_mac_from_nsp.py` packs the build folder's Mac host as an `.app` (and a `.zip` beside it), from a game folder, a `.nsp`, or a `.xci` file:
 
 ```
 python3 scripts/build_mac_from_nsp.py ~/Games/MarioWonder --app-name "Mario Wonder" --lang en --save save
@@ -136,7 +137,7 @@ python3 scripts/build_mac_from_nsp.py "$HOME/Games/MarioWonder/Super Mario Bros.
 python3 scripts/build_mac_from_nsp.py ~/Games/MarioWonder --app-name "Mario Wonder" --lang en --save save --skip-host --no-zip
 ```
 
-It builds `dmhost`, then copies the patched modules, the Mac shader cache, the profile and the fonts into `Contents/Resources/`. `data-dir.txt` in the bundle points at the build folder, which must stay in place (the RomFS is not copied). The script defaults to English (`DM_LANG=en-US`) and the `save` folder; `--app-name`, `--lang`, `--save`, `--icon` and `--out-dir` change the app name, `DM_LANG`, the save folder, the icon and the output folder. A prior `build_ipa_from_nsp.py` run (which builds `<build>/shader/cache`) is needed.
+It builds `dmhost`, then copies the patched modules, the Mac shader cache, the profile and the fonts into `Contents/Resources/`. `data-dir.txt` in the bundle points at the build folder, which must stay in place (the RomFS is not copied). The script defaults to English (`DM_LANG=en-US`) and the `save` folder; `--app-name`, `--lang`, `--save`, `--icon` and `--out-dir` change the app name, `DM_LANG`, the save folder, the icon and the output folder. A prior `build_ipa.py` run (which builds `<build>/shader/cache`) is needed.
 
 ## Prewarm lists
 
