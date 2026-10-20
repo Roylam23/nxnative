@@ -1583,8 +1583,10 @@ static int clear_rect_zero(int i);
 static id<MTLTexture> tex_linear(const tex_t *t) {
     // LINEAR_RENDER_TARGET is a linear layout too (SMBW's sky colour ramps: four 64×1 RGBA16F, written by the CPU every frame)
     // CPU_NO_ACCESS is not enforced on the host's guest memory: Rhythm Heaven Groove's font engine rasterizes each glyph
-    // into a linear R8 texture in a pool marked CPU_NO_ACCESS, and only a texture on that buffer sees the writes.
+    // into a linear R8 texture in a pool marked CPU_NO_ACCESS, and only a texture on that buffer sees the writes. That is
+    // the profile's linear_cpu_no_access; other games keep the old rule (no texture for CPU_NO_ACCESS).
     if (!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) || !t->mem || !t->pool) return nil;
+    if ((t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) && !DM_GAME_LINEAR_CPU_NO_ACCESS) return nil;
     if (t->d.target != NVN_TEXTURE_TARGET_2D || t->d.levels > 1 || t->d.samples > 1) return nil;
     uint32_t pf = 0; uint8_t swz[4]; int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf || !bpb || bw != 1 || bh != 1) return nil;
