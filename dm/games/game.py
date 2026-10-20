@@ -94,6 +94,10 @@ def header(g):
     vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
+    ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
+    if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
+    fs = g.get('frame_step', 'ticks')   # the frame step's method: ticks = whole vsyncs decided by the host (nvn_fstep.h), legacy = each game's earlier method (for the iPhone A/B test)
+    if fs not in ('ticks', 'legacy'): sys.exit(f'{g.id}: frame_step must be ticks or legacy: {fs}')
     cp = g.get('core_preempt', 'off')   # same-core preemption approximation (hle_thread.c): on / off
     if cp not in ('on', 'off'): sys.exit(f'{g.id}: core_preempt must be on or off: {cp}')
     sf = g.get('shared_font', 'bfttf')   # what the shared-font address points at (hle_sdk16.c): bfttf = 8-byte header + TTF, ttf = the TTF alone
@@ -112,6 +116,8 @@ def header(g):
     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
     lna = g.get('linear_cpu_no_access', 'off')   # linear textures in CPU_NO_ACCESS pools use the guest buffer (nvn_mtl.m tex_linear; Rhythm Heaven Groove's glyphs)
     if lna not in ('on', 'off'): sys.exit(f'{g.id}: linear_cpu_no_access must be on or off: {lna}')
+    vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
+    if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
@@ -138,9 +144,12 @@ def header(g):
          f'#define DM_GAME_NVN_SAMP_BASE {g.int("nvn_samp_base"):#x}',
          f'#define DM_GAME_NVN_IMG_BASE {g.int("nvn_img_base"):#x}',
          f'#define DM_GAME_NVN_IMG_SLOTS {g.int("nvn_img_slots")}',
+         *([f'#define DM_GAME_NVN_SEPTEX_BASE {g.int("nvn_septex_base"):#x}', f'#define DM_GAME_NVN_SEPTEX_SLOTS {g.int("nvn_septex_slots")}'] if g.get('nvn_septex_base', '') else []),   # a separate texture table of its own (Monster Hunter Rise)
          f'#define DM_GAME_DISPLAY_VERSIONS {vers}',
          f'#define DM_GAME_PRESENT_DISPLAY {int(pi == "display")}',
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
+         f'#define DM_GAME_FPS_TARGET {int(ft)}',
+         f'#define DM_GAME_FRAME_STEP_LEGACY {int(fs == "legacy")}',
          f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}',
          f'#define DM_GAME_PAD_FULL {int(pl == "full")}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
@@ -151,6 +160,7 @@ def header(g):
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
          f'#define DM_GAME_LINEAR_CPU_NO_ACCESS {int(lna == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
+         f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}',
          f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}',
          '']
