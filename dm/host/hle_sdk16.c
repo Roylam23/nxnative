@@ -105,7 +105,7 @@ HLE_FORCE("_ZN2nn2pl16IsRunningOnOunceEv", "running on Switch 2: no", unsigned, 
 HLE_FORCE("_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE", "request shared font load; the stand-in font is always available, no-op", void, h_pl_ReqLoad, int type) { (void)type; }
 // SDK 21 (Rhythm Heaven Groove): the new list/priority form. main+0x501eb0 only tests bit 0 of the return as a bool (1 = ready), then the
 // game asks for the individual fonts through GetSharedFontAddress/Size, which the host already serves from its stand-in fonts.
-HLE_FORCE("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", "shared font list: the stand-in fonts are ready", uint32_t, h_pl_GetSharedFont, int *count, void *out, int size, uint64_t lang) {
+HLE_FORCE_MAIN("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", "03ff4a3bec96bde3a2e37ce3aa4caa0c", "shared font list: the stand-in fonts are ready", uint32_t, h_pl_GetSharedFont, int *count, void *out, int size, uint64_t lang) {
     (void)lang;
     // The shared-font list is what supplies the Nintendo extension font (button icons, private-use U+E090..). The game's own
     // text fonts are loaded separately from mesg/Font; entry 0 here is the extension font, so "Press A" has its A glyph.
@@ -161,7 +161,7 @@ static uint32_t sfnt_size(const uint8_t *d) {
 // The game passes a decoded TTF/OTF (after the 8-byte BFTTF header) and size 0; the SDK infers the size from the header.
 // Forward to the SDK's own LoadFont with that size; the game may still be filling the data while the call runs, so the
 // host only logs the first loads and never touches the font bytes.
-HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "font engine: LoadFont (SDK implementation)", uint32_t, h_font_Load, void *self, const char *name, const void *data, uint32_t size, uint32_t flags) {
+HLE_FORCE_MAIN("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "03ff4a3bec96bde3a2e37ce3aa4caa0c", "font engine: LoadFont (SDK implementation)", uint32_t, h_font_Load, void *self, const char *name, const void *data, uint32_t size, uint32_t flags) {
     module_t *sdk = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sdk = &g_mod[i]; break; }
     // The forwarded LoadFont offset belongs to the Rhythm Heaven Groove SDK build; never call it on another build (dm/games/README.md).
     if (!sdk || strcmp(sdk->build_id, "cff2680fe74cb7d8d13b525730d1a7fd")) {

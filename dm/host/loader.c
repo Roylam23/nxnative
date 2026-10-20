@@ -129,8 +129,10 @@ static void force_init(void) {
             if (!strcmp(g_force[i].name, g_force[j].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
 }
 static void *force_lookup(const char *name) {
+    const char *main_build = dm_main_build();
     for (unsigned i = 0; i < g_nforce; i++)
         if (!strcmp(g_force[i].name, name)) {
+            if (g_force[i].main_build && strcmp(g_force[i].main_build, main_build)) continue;   // a port's own fix, not another game's
             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
             void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
         }
@@ -138,11 +140,14 @@ static void *force_lookup(const char *name) {
 }
 // Generic host: the list serves several games, so entries a game does not reference are only noted; with DM_FORCE_STRICT=1 it still fails loudly (for checking a mistyped list)
 static void force_check(void) {
-    unsigned unused = 0; int strict = getenv("DM_FORCE_STRICT") != NULL;
-    for (unsigned i = 0; i < g_nforce; i++)
+    unsigned unused = 0, other = 0; int strict = getenv("DM_FORCE_STRICT") != NULL;
+    const char *main_build = dm_main_build();
+    for (unsigned i = 0; i < g_nforce; i++) {
+        if (g_force[i].main_build && strcmp(g_force[i].main_build, main_build)) { other++; continue; }
         if (!g_force_hits[i]) { if (strict || g_flag.imports) LOG("forced takeover entry with no reference at all: %s", g_force[i].name); unused++; }
+    }
     if (unused && strict) die("forced takeover list is wrong");
-    LOG("force: %u entries hit, %u not referenced by this game", g_nforce - unused, unused);
+    LOG("force: %u entries hit, %u not referenced by this game, %u for another build", g_nforce - unused - other, unused, other);
 }
 
 // Read the rewriter table header (segment boundaries, slot numbers); any row beyond the header means an old-format build output (code modified at load time), which is rejected
