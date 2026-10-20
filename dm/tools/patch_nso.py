@@ -248,6 +248,18 @@ OBS = {
      'orig sub sp, sp, #0x60'),
 ]}
 BUILD_ID = d[0x40:0x50].hex()
+# Cuts that belong to one game: {module build ID: main build ID}. The SDK module can be shared by several games, so a
+# fixed-address fix must also check the game's main build; other games keep the SDK implementation.
+CUTS_MAIN = {
+    'cff2680fe74cb7d8d13b525730d1a7fd': '03ff4a3bec96bde3a2e37ce3aa4caa0c',
+}
+def main_build_id():   # the main module beside this one (the rewriter is called once per ExeFS module)
+    try:
+        with open(os.path.join(os.path.dirname(src), 'main'), 'rb') as f: h = f.read(0x50)
+        return h[0x40:0x50].hex() if h[:4] == b'NSO0' else ''
+    except OSError:
+        return ''
+MAIN_BUILD = main_build_id()
 # Build-time product rules: the old original-resource / comparison domain is unchanged by default; the touchscreen version is issued separately as a new version, and guest code is not written at runtime.
 RULESET = os.environ.get('DM_RULESET', 'native')
 assert RULESET in ('native', 'touch-run-v4'), f'unknown rule set {RULESET}'
@@ -257,7 +269,7 @@ if RULE_RUN:
     import hashlib
     assert BUILD_ID == RULE_BUILD, f'Run rule build ID mismatch {BUILD_ID}'
     RULE_ORIG_SHA = hashlib.sha256(IMG).hexdigest()
-cuts = list(CUTS.get(BUILD_ID, []))
+cuts = [c for c in CUTS.get(BUILD_ID, []) if BUILD_ID not in CUTS_MAIN or MAIN_BUILD == CUTS_MAIN[BUILD_ID]]
 # The touchscreen rule domain by default also carries the host-private gates; the rule gate check can turn them off explicitly, keeping the same packaging entry point and rule domain.
 PRIVATE_GATES = os.environ.get("DM_PRIVATE_GATES", "1") != "0"
 PRIVATE_AIM = RULE_RUN and PRIVATE_GATES
