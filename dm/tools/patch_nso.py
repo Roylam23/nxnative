@@ -147,6 +147,16 @@ CUTS = {
   # called at main+0xcf9ad4 / main+0x1281044) takes the framework's current interval (vtable +0x138); the frame ratio = current interval / 2 -- at interval 1 each frame advances half a 30 fps tick and the game speed stays the same;
   # when it struggles and steps back to 2 / 3 the ratio is 1 / 1.5, again at the same speed. So only the floor changes from 2 to 1: the lower bound of the candidate interval (two places), the step-down target recorded when stepping up, max(candidate, 3) - 1 → max(candidate, 2) - 1,
   # and stepping down stops at < 3 → < 2. On hardware the same logic starting from 1 would also be 60 fps; it falls back to 30 by itself only when its input shows a slow frame (the last two cuts make that input include the GPU time)
+  # Rhythm Heaven Groove 1.0.0 (v0) sdk (SDK 21): the host has no sm: service. The game's static init builds a std::random_device,
+  # which calls getentropy -> nn::sf::hipc::InitializeHipcServiceResolution -> nn::sm::Initialize; sm::Initialize waits for the
+  # service manager, times out, and the SDK aborts the process. The host resolves services itself, so make this one return success.
+  'cff2680fe74cb7d8d13b525730d1a7fd': [
+    (0x163420, 'fd7bbda9', '00008052', 'nn::sm::Initialize stub: stp x29,x30 → mov w0,#0', 'host-only'),
+    (0x163424, 'f50b00f9', 'c0035fd6', 'nn::sm::Initialize stub: str x21 → ret', 'host-only'),
+    (0x567e70, 'fd7bbfa9', '00008052', 'getentropy stub: return 0 without the random service (the game only seeds std::random_device)', 'host-only'),
+    (0x567e74, 'fd030091', 'c0035fd6', 'getentropy stub: ret', 'host-only'),
+  ],
+  # The Legend of Zelda: Breath of the Wild 1.9.0 (v1114112) main
   'cd57b23fa4bbad65803d9788c01821ee': [
     (0x112670c, '6041201e', '4041201e', 'lower bound of the candidate interval: fmov s0,s11 (2.0) → fmov s0,s10 (1.0)', 'host-only'),
     (0x1126710, '7f0b0071', '7f070071', 'lower bound of the candidate interval: cmp w27,#2 → cmp w27,#1', 'host-only'),

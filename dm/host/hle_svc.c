@@ -224,6 +224,13 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         _exit(42);
     }
     case 0x1E: regs[0] = 0; regs[1] = guest_ns() * 12 / 625; return 0;   // GetSystemTick
+    case 0x1F: {  // ConnectToNamedPort(out_handle*, name): the host resolves services itself; hand back a non-zero fake handle
+        uint64_t h = 0x100;
+        if (regs[0]) *(uint32_t *)regs[0] = (uint32_t)h;
+        static int once; if (!once++) LOG("SVC 0x1F ConnectToNamedPort %s → handle %#llx", regs[1] ? (const char *)regs[1] : "(null)", (unsigned long long)h);
+        regs[0] = 0; return 0;
+    }
+    case 0x21: regs[0] = 0; return 0;   // SendSyncRequest: no service behind the fake handle; the SDK only needs the call to succeed
     case 0x27: {  // OutputDebugString(str, len)
         if (g_flag.dbg) fprintf(stderr, "[guest] %.*s\n", (int)regs[1], (char *)regs[0]);
         regs[0] = 0; return 0;

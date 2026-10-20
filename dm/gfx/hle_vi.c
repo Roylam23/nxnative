@@ -10,6 +10,11 @@ HLE_FORCE("_ZN2nn2vi10InitializeEv", "display service init; the host has no vi s
 HLE_FORCE("_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE", "open default display; the host returns a static object", Result, h_vi_OpenDisp, void **out) {
     *out = &g_display; return RES_OK;
 }
+// SDK 21 (Rhythm Heaven Groove): the SDK's own version calls nn::vi::GetDefaultDisplay and dereferences the (host-made) display object; the
+// host has a static display from OpenDefaultDisplay, so answer the panel query directly instead. 0 = the built-in LCD panel.
+HLE_FORCE("_ZN2nn2vi32GetDefaultDisplayPanelIdentifierEPNS0_15PanelIdentifierE", "default display panel identifier: LCD", Result, h_vi_Panel, int *out) {
+    if (out) *out = 0; return RES_OK;
+}
 HLE_FORCE("_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE", "create layer; the host returns a static object", Result, h_vi_CreateLayer, void **out, void *disp) {
     (void)disp; *out = &g_layer; return RES_OK;
 }

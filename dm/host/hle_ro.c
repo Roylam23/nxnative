@@ -8,6 +8,13 @@
 
 HLE_FORCE("_ZN2nn2ro10InitializeEv", "connect to the ldr:ro service; the host has none, symbol lookups search the loaded modules directly", Result, h_ro_Initialize, void) { LOG("init takeover: ro::Initialize (no-op)"); return 0; }
 
+// SDK 21 (Rhythm Heaven Groove) calls this from the module's DSO init after applying its RELR relocations. On the device it asks the kernel to make the
+// relocation-table pages read-only; the host has no such permission change to make, and the game only checks that the call succeeded.
+HLE_FORCE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", "mark the module's relro ranges read-only; the host memory is already writable-on-demand and the call only needs to succeed", void, h_ro_ProtectRelro,
+          const void *a, const void *b, const void *c, const void *d, const void *e) {
+    (void)a; (void)b; (void)c; (void)d; (void)e;
+}
+
 HLE_FORCE("_ZN2nn2ro12LookupSymbolEPmPKc", "look up a definition by name in the loaded modules", Result, h_ro_LookupSymbol, uintptr_t *out, const char *name) {
     void *p = name ? guest_sym(name) : NULL;
     static int n; if (n++ < 40) LOG("ro::LookupSymbol %s → %p", name ? name : "(null)", p);
