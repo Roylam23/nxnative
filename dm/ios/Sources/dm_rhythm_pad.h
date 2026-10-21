@@ -1,9 +1,10 @@
-// Two-zone rhythm pad (Rhythm Heaven Groove): the right half of the screen is A, the left half is the key the current minigame
-// needs there, and the corners hold B (top right, same size as the others) and + / - (top left, + above -). The A_RIGHT layout used
-// by the boot caution / title screen has a hidden A on the right half and no key or zone overlays; the start menu uses A_RIGHT_NAV,
-// which adds swipe-to-direction navigation on the left half. The game has no touch input, so menus turn a tap into A and a swipe
-// into one D-pad press (dm_rp_move), with no game-touch passthrough. The geometry, gestures and press counting are pure C so the
-// Mac tests can cover them (t_rhythm_pad.c); DmRhythmPad.m only draws and feeds the touches.
+// Rhythm pad (Rhythm Heaven Groove): the right half of the screen is A and the left half is the key the current minigame needs
+// there; when that key is none (an A-only minigame), the whole picture is A. B sits at the top of the left side bar and + / - at the
+// top of the right one, both x-centred in their bar (B same size as the others; + above -). The A_RIGHT layout used by the boot caution / title screen has a hidden A on the right half and
+// no key or zone overlays; the start menu uses A_RIGHT_NAV, which adds swipe-to-direction navigation on the left half. The game has
+// no touch input, so menus turn a tap into A and a swipe into one D-pad press (dm_rp_move), with no game-touch passthrough. The
+// geometry, gestures and press counting are pure C so the Mac tests can cover them (t_rhythm_pad.c); DmRhythmPad.m only draws and
+// feeds the touches.
 #pragma once
 #include <stdint.h>
 
@@ -19,7 +20,7 @@ typedef struct { float x, y, r; int key; } dm_rp_button;
 typedef struct {
     float width, height;
     int kind;                 // DM_RP_MENU / DM_RP_GAME / DM_RP_A_RIGHT
-    int left_key;             // DM_RP_KEY_* the left half sends (NONE = inert)
+    int left_key;             // DM_RP_KEY_* the left half sends (NONE = A-only game: the whole picture sends A; A_RIGHT keeps its own rule)
     dm_rp_button b, plus, minus;
     dm_rp_button extra[4];    // optional extra keys, bottom left
     int n_extra;

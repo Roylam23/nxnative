@@ -1,6 +1,7 @@
 // Touch layout for rhythm games (Rhythm Heaven Groove): follows the game's file loads to tell the front end whether it is in a
 // menu, the start menu, or a minigame, and which key the left half of the screen should send there. The game has no touch input,
-// so the front end turns menu taps into A and menu swipes into D-pad presses; only minigame halves send held keys.
+// so the front end turns menu taps into A and menu swipes into D-pad presses; minigames send held keys (an A-only minigame sends A
+// from the whole picture).
 //
 // The table comes from the game profile (dm/games/<id>/touch_layouts.tsv, generated into game_profile.h as
 // DM_GAME_TOUCH_LAYOUTS). A runtime file (dm_touch_layout_load) replaces it without rebuilding the app: on iOS the front end
@@ -17,7 +18,7 @@ void dm_touch_layout_reset(void);
 // Runtime table override: scene<TAB>left[<TAB>extra][<TAB>note], comments with '#'. Returns the rows loaded, or -1.
 int dm_touch_layout_load(const char *path);
 int dm_touch_layout_kind(void);
-int dm_touch_layout_left(void);            // the key the left half sends (DM_TL_*)
+int dm_touch_layout_left(void);            // the key the left half sends (DM_TL_*); NONE in a game means A-only, so the front end uses the whole picture
 uint32_t dm_touch_layout_extra(void);      // optional extra keys (bit 1 << DM_TL_*), drawn bottom-left
 unsigned dm_touch_layout_gen(void);        // changes on every state change; the front end swaps the layout when it moves
 void dm_touch_layout_scene(char *out, int cap);   // current scene dir ("" = none), for logging

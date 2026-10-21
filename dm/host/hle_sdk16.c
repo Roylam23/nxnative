@@ -117,9 +117,13 @@ HLE_FORCE("_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE", "shared font siz
 typedef struct { uint32_t type, pad; const void *address; size_t size; } pl_font_data_t;
 HLE_FORCE("_ZN2nn2pl13GetSharedFontEPiPNS0_14SharedFontDataEiNS_8settings12LanguageCodeE", "every shared font: the stand-in TTFs (past the BFTTF header), types 0-5 in order", unsigned, h_pl_GetSharedFont, int *count, pl_font_data_t *out, int max, uint64_t lang) {
     (void)lang; int n = 0;
-    for (int t = 0; t < 6; t++) {
-        font_t f = font_get(t); if (!f.p) continue;
-        if (n < max) out[n] = (pl_font_data_t){ (uint32_t)t, 0, f.p + 8, f.n - 8 };
+    int slots = 6;   // standard: six shared fonts; legacy A16: three (less Arial memory / load time), with the extension font in the last slot
+    const char *legacy = getenv("DM_LEGACY");
+    if (legacy && atoi(legacy)) slots = 3;
+    for (int t = 0; t < slots; t++) {
+        int ft = (slots == 3 && t == slots - 1) ? 5 : t;
+        font_t f = font_get(ft); if (!f.p) continue;
+        if (n < max) out[n] = (pl_font_data_t){ (uint32_t)ft, 0, f.p + 8, f.n - 8 };
         n++;
     }
     *count = n; return n > 0;

@@ -2,7 +2,7 @@
 # scene<TAB>left[<TAB>extra][<TAB>note]
 #   left  = the key the left half of the screen sends in that minigame (none, B, Left, Right, Down, Up)
 #   extra = optional comma-separated directions (Left, Right, Down, Up), drawn as small glass keys at the bottom left
-#   "*"   = the default row for any scene not listed (the A-only games use none)
+#   "*"   = the default row for any scene not listed (the A-only games use none; the whole picture sends A)
 # The scene name is the folder under graph/scene/; Beatspell uses graph/beatspell/.
 # The runtime file Documents/touch_layouts.tsv replaces this table on the device, so more rows can be filled without rebuilding.
 beatspell	B		Rhythm Toy Box / Beatspell (B spells)

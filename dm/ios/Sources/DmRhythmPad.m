@@ -1,8 +1,8 @@
 // Rhythm pad for Rhythm Heaven Groove (profile pad_layout rhythm, iOS 26+): the right half of the screen sends A, the left half
-// sends the key the current minigame needs there, B sits in the top-right corner (same size as the others) and + / - are stacked
-// vertically at the top-left (+ above -). The corners use the Liquid Glass material (UIGlassEffect); the halves are invisible hit
-// zones. In a minigame, a pressed half shows only a small soft glow at the touch point and its key symbol just above the finger;
-// there is no zone fill, border or rim. The game has no touch input: the boot caution / title screen uses a hidden A on the right half, and the start
+// sends the key the current minigame needs there; an A-only minigame sends A from the whole picture. B sits at the top, halfway
+// between the left screen edge and the picture edge; + / - are stacked at the top of the right side bar (+ above -).
+// The glass keys use the Liquid Glass material (UIGlassEffect); the zones are invisible hit areas. In a minigame, a pressed zone shows only a small soft glow at the touch point
+// and its key symbol just above the finger; there is no zone fill, border or rim. The game has no touch input: the boot caution / title screen uses a hidden A on the right half, and the start
 // menu adds swipe navigation on the left half. Other menus turn a tap into A and a swipe into one D-pad press (no zone or label
 // drawn); there is no game-touch passthrough.
 //
@@ -46,7 +46,7 @@ static __weak DmRhythmPad *g_view;
 
     NSMapTable<UITouch *, NSNumber *> *_owner;   // touch -> finger slot
     BOOL _slotUsed[16];
-    int _zoneOfSlot[16];                          // 0 none, 1 left half, 2 right half (for the touch highlight)
+    int _zoneOfSlot[16];                          // 0 none, 1 left key zone, 2 A zone (the whole picture in an A-only game)
     CGPoint _point[16];                           // current touch position, so the highlight follows the finger
     UITouch *_game[16];                          // slots forwarded to the game touch screen (menu / physical-controller fallback)
     int _debug;
@@ -223,7 +223,10 @@ static NSString *extra_symbol(int key) {
     _glassB.frame = CGRectMake(l->b.x - l->b.r, l->b.y - l->b.r, 2 * l->b.r, 2 * l->b.r); _glassB.layer.cornerRadius = l->b.r;
     _glassPlus.frame = CGRectMake(l->plus.x - l->plus.r, l->plus.y - l->plus.r, 2 * l->plus.r, 2 * l->plus.r); _glassPlus.layer.cornerRadius = l->plus.r;
     _glassMinus.frame = CGRectMake(l->minus.x - l->minus.r, l->minus.y - l->minus.r, 2 * l->minus.r, 2 * l->minus.r); _glassMinus.layer.cornerRadius = l->minus.r;
-    _labelB.frame = _glassB.frame; _labelPlus.frame = _glassPlus.frame; _labelMinus.frame = _glassMinus.frame;
+    _labelB.frame = _glassB.frame;
+    // The system font's + / − glyphs sit about 2 pt below the line-box centre; lift only those two labels so their ink is centred in the glass.
+    _labelPlus.frame = CGRectOffset(_glassPlus.frame, 0, -2);
+    _labelMinus.frame = CGRectOffset(_glassMinus.frame, 0, -2);
     for (int i = 0; i < l->n_extra && i < (int)_extraGlass.count; i++) {
         const dm_rp_button *b = &l->extra[i];
         _extraGlass[i].frame = CGRectMake(b->x - b->r, b->y - b->r, 2 * b->r, 2 * b->r); _extraGlass[i].layer.cornerRadius = b->r;
@@ -344,7 +347,7 @@ static NSString *extra_symbol(int key) {
         int zone = 0;
         if (!_padOff && _kind == DM_RP_GAME) {
             CGFloat half = self.bounds.size.width / 2;
-            if (k == DM_RP_KEY_A && p.x >= half) zone = 2;
+            if (k == DM_RP_KEY_A && (_left == DM_RP_KEY_NONE || p.x >= half)) zone = 2;   // A-only: show A anywhere in the picture
             else if (_left != DM_RP_KEY_NONE && k == _left && p.x < half) zone = 1;
         }
         _zoneOfSlot[slot] = zone;

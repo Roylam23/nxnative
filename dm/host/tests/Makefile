@@ -28,10 +28,10 @@ $(B)/t_rhythm_pad: t_rhythm_pad.c ../../ios/Sources/dm_rhythm_pad.c ../../ios/So
 	clang -O1 -Wall -Werror -I.. -I../../ios/Sources -o $@ t_rhythm_pad.c ../../ios/Sources/dm_rhythm_pad.c
 $(B)/t_thread_leak: t_thread_leak.c ../thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_thread_leak.c
-$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs.c t_fs_stub.c ../hle_bigstack.c
-$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAME_H) | $(B)
-	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c
+$(B)/t_fs: t_fs.c t_fs_stub.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h ../dm_touch_layout.c ../dm_touch_layout.h $(GAME_H) | $(B)
+	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs.c t_fs_stub.c ../hle_bigstack.c ../dm_touch_layout.c
+$(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h ../dm_touch_layout.c ../dm_touch_layout.h $(GAME_H) | $(B)
+	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c ../dm_touch_layout.c
 $(B)/t_audio: t_audio.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio.c -framework AudioToolbox
 $(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)

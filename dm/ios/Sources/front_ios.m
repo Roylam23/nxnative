@@ -59,7 +59,7 @@ static void front_ios_audio_watch(void);
     }
     front_ios_audio_watch();
     // Full-screen Metal layer: the present pass keeps the game at 16:9 in the centre and fills the rest with the ambient side
-    // bars (nvn_mtl.m: edge blur + overall average, saturation/falloff). DM_AMBIENT=0 gives black bars back.
+    // bars (nvn_mtl.m: jittered edge blur, cool-white haze, fine frost grain, saturation/falloff). DM_AMBIENT=0 gives black bars back.
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;

@@ -34,8 +34,15 @@ void dm_rp_layout_make(dm_rp_layout *l, float w, float h, int kind, int left_key
     float u = h / 430.0f; if (u > 1.3f) u = 1.3f; if (u < 0.6f) u = 0.6f;   // same unit as DmGamepad, with a floor for small screens
     float inset = 14 * u, gap = 6 * u;
     float rS = 24 * u, rB = rS;   // B matches the + / - buttons; + sits above -
-    l->b = (dm_rp_button){w - sr - inset - rB, st + inset + rB, rB, DM_RP_KEY_B};
-    l->plus = (dm_rp_button){sl + inset + rS, st + inset + rS, rS, DM_RP_KEY_PLUS};
+    // The 16:9 picture is centred; put the side keys halfway between the screen edge and its edge, along the
+    // top edge as before (B and + share the top row, - below +). A full-width picture leaves no side bar, so
+    // fall back to the screen edge.
+    float game_w = w < h * 16.0f / 9.0f ? w : h * 16.0f / 9.0f;
+    float side_x = (w - game_w) * 0.25f;
+    if (side_x < inset + rS) side_x = inset + rS;
+    float top = st + inset + rS;
+    l->b = (dm_rp_button){side_x, top, rB, DM_RP_KEY_B};
+    l->plus = (dm_rp_button){w - side_x, top, rS, DM_RP_KEY_PLUS};
     l->minus = (dm_rp_button){l->plus.x, l->plus.y + 2 * rS + gap, rS, DM_RP_KEY_MINUS};
     static const int order[] = {DM_RP_KEY_LEFT, DM_RP_KEY_RIGHT, DM_RP_KEY_DOWN, DM_RP_KEY_UP};
     for (int i = 0; i < 4; i++) if (extra_mask & (1u << order[i])) {
@@ -53,7 +60,8 @@ int dm_rp_hit(const dm_rp_layout *l, float x, float y) {
     if (l->kind == DM_RP_MENU) return DM_RP_GESTURE;   // menu free area: tap/swipe, no game touch passthrough
     if (l->kind == DM_RP_A_RIGHT) return x >= l->width / 2 ? DM_RP_KEY_A : DM_RP_INERT;   // caution/title: hidden A on the right
     if (l->kind == DM_RP_A_RIGHT_NAV && x < l->width / 2) return DM_RP_GESTURE;   // start menu: A right, gestures left
-    if (x < l->width / 2) return l->left_key ? l->left_key : DM_RP_INERT;
+    if (l->kind == DM_RP_GAME && l->left_key == DM_RP_KEY_NONE) return DM_RP_KEY_A;   // A-only minigame: the whole picture is A
+    if (x < l->width / 2) return l->left_key;
     return DM_RP_KEY_A;
 }
 

@@ -2,7 +2,8 @@
 //
 // The only signal is the game's own asset loads: a minigame loads graph/scene/<id>/..., the menus load graph/menu/..., and the
 // result pages graph/result/.... The boot caution / title screen uses a hidden A on the right half; the start menu keeps that A and
-// adds left-half swipe navigation. The game has no touch input, so the other menus and the hub turn taps into A and swipes into
+// adds left-half swipe navigation. Minigames send the table's left key on the left half and A on the right; a minigame with no left
+// key sends A from the whole picture. The game has no touch input, so the other menus and the hub turn taps into A and swipes into
 // D-pad presses. Paths are matched on the guest thread when a file opens (hle_fs.c), and the front end polls the state at 60 Hz,
 // so a scene change does not need a frame callback of its own.
 #include "dm.h"

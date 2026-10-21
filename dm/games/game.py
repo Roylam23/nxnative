@@ -125,8 +125,9 @@ def header(g):
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
-    # Rhythm pad: scene → the key the left half of the screen sends (DmRhythmPad.m, dm_touch_layout.c). The profile file is
-    # scene<TAB>left[<TAB>extra][<TAB>note] (comments with '#'); "*" is the default row, extra is a comma-separated list of directions.
+    # Rhythm pad: scene → the key the left half of the screen sends (DmRhythmPad.m, dm_touch_layout.c); none in a game means
+    # A-only, so the whole picture sends A. The profile file is scene<TAB>left[<TAB>extra][<TAB>note] (comments with '#'); "*" is
+    # the default row, extra is a comma-separated list of directions.
     tl_rows = [('*', 'none', '')]
     if pl == 'rhythm':
         tp = g.table('touch_layouts.tsv')

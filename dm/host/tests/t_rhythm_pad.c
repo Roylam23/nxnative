@@ -1,6 +1,7 @@
-// dm_rhythm_pad.c: two-zone hit testing, corner priority, menu tap/swipe gestures, pulse decay, multi-touch press counting, layout changes.
+// dm_rhythm_pad.c: two-zone and A-only full-screen hit testing, corner priority, menu tap/swipe gestures, pulse decay, multi-touch press counting, layout changes.
 #include "../../ios/Sources/dm_rhythm_pad.h"
 #include "../dm_input.h"
+#include <math.h>
 #include <stdio.h>
 
 static int fails;
@@ -8,6 +9,9 @@ static int fails;
 
 static dm_rp_layout make(int kind, int left, unsigned extra) {
     dm_rp_layout l; dm_rp_layout_make(&l, 932, 430, kind, left, extra, 0, 0, 0, 0); return l;
+}
+static dm_rp_layout make_safe(int kind, int left, unsigned extra) {
+    dm_rp_layout l; dm_rp_layout_make(&l, 932, 430, kind, left, extra, 59, 59, 0, 0); return l;
 }
 
 int main(void) {
@@ -18,21 +22,43 @@ int main(void) {
     CHECK(dm_rp_hit(&m, m.plus.x, m.plus.y) == DM_RP_KEY_PLUS, "menu plus");
     CHECK(m.b.r == m.plus.r && m.plus.r == m.minus.r, "B and + / - radii %g %g %g", m.b.r, m.plus.r, m.minus.r);
     CHECK(m.plus.x == m.minus.x && m.plus.y < m.minus.y, "+ above - %g,%g %g,%g", m.plus.x, m.plus.y, m.minus.x, m.minus.y);
+    float game_w = fminf(m.width, m.height * 16.0f / 9.0f);
+    float bar = (m.width - game_w) * 0.5f;
+    CHECK(fabsf(m.b.x - bar * 0.5f) < 0.01f, "B is centred in the left bar: %.1f vs %.1f", m.b.x, bar * 0.5f);
+    CHECK(fabsf(m.plus.x - (m.width - bar * 0.5f)) < 0.01f, "+ / - are centred in the right bar: %.1f", m.plus.x);
+    CHECK(fabsf(m.b.y - (14 + m.b.r)) < 0.01f, "B is at the top inset: %.1f", m.b.y);
+    CHECK(m.b.y == m.plus.y, "B and + share the top row: %.1f %.1f", m.b.y, m.plus.y);
+    CHECK(m.plus.y < m.minus.y, "+ is above -: %.1f %.1f", m.plus.y, m.minus.y);
+
+    dm_rp_layout ms = make_safe(DM_RP_MENU, DM_RP_KEY_NONE, 0);
+    CHECK(fabsf(ms.b.x - m.b.x) < 0.01f, "B ignores the side safe-area inset: %.1f", ms.b.x);
+    CHECK(fabsf(ms.plus.x - m.plus.x) < 0.01f, "+ ignores the side safe-area inset: %.1f", ms.plus.x);
+
+    dm_rp_layout full; dm_rp_layout_make(&full, 764, 430, DM_RP_MENU, DM_RP_KEY_NONE, 0, 0, 0, 0, 0);
+    CHECK(fabsf(full.b.x - (14 + full.b.r)) < 0.01f, "no side bar: B falls back to the screen edge: %.1f", full.b.x);
 
     dm_rp_layout g = make(DM_RP_GAME, DM_RP_KEY_DOWN, 0);
     CHECK(dm_rp_hit(&g, 200, 300) == DM_RP_KEY_DOWN, "left half down %d", dm_rp_hit(&g, 200, 300));
     CHECK(dm_rp_hit(&g, 700, 300) == DM_RP_KEY_A, "right half A %d", dm_rp_hit(&g, 700, 300));
-    CHECK(dm_rp_hit(&g, g.b.x, g.b.y) == DM_RP_KEY_B, "B wins over the right half");
-    CHECK(dm_rp_hit(&g, g.plus.x, g.plus.y) == DM_RP_KEY_PLUS, "+ wins over the left half");
+    CHECK(dm_rp_hit(&g, g.b.x, g.b.y) == DM_RP_KEY_B, "B wins over the left half");
+    CHECK(dm_rp_hit(&g, g.plus.x, g.plus.y) == DM_RP_KEY_PLUS, "+ wins over the right half");
 
     dm_rp_layout n = make(DM_RP_GAME, DM_RP_KEY_NONE, 0);
-    CHECK(dm_rp_hit(&n, 200, 300) == DM_RP_INERT, "A-only left half inert %d", dm_rp_hit(&n, 200, 300));
+    CHECK(dm_rp_hit(&n, 200, 300) == DM_RP_KEY_A, "A-only left half A %d", dm_rp_hit(&n, 200, 300));
+    CHECK(dm_rp_hit(&n, 466, 300) == DM_RP_KEY_A, "A-only centre A %d", dm_rp_hit(&n, 466, 300));
+    CHECK(dm_rp_hit(&n, n.b.x, n.b.y) == DM_RP_KEY_B, "A-only B wins over full-screen A");
+    CHECK(dm_rp_hit(&n, n.plus.x, n.plus.y) == DM_RP_KEY_PLUS, "A-only plus wins over full-screen A");
+    dm_rp_state ao; dm_rp_init(&ao, 932, 430, DM_RP_GAME, DM_RP_KEY_NONE, 0, 0, 0, 0, 0);
+    CHECK(dm_rp_begin(&ao, 0, 200, 300) == DM_RP_KEY_A, "A-only left press is A");
+    CHECK(ao.buttons == DM_BTN_A, "A-only left buttons A %#llx", (unsigned long long)ao.buttons);
+    dm_rp_end(&ao, 0);
+    CHECK(ao.buttons == 0, "A-only left release");
 
     dm_rp_layout ar = make(DM_RP_A_RIGHT, DM_RP_KEY_NONE, 0);
     CHECK(dm_rp_hit(&ar, 200, 300) == DM_RP_INERT, "A-right left half inert %d", dm_rp_hit(&ar, 200, 300));
     CHECK(dm_rp_hit(&ar, 700, 300) == DM_RP_KEY_A, "A-right right half A %d", dm_rp_hit(&ar, 700, 300));
     CHECK(dm_rp_hit(&ar, ar.b.x, ar.b.y) == DM_RP_KEY_B, "A-right B wins over A");
-    CHECK(dm_rp_hit(&ar, ar.plus.x, ar.plus.y) == DM_RP_KEY_PLUS, "A-right plus wins over left");
+    CHECK(dm_rp_hit(&ar, ar.plus.x, ar.plus.y) == DM_RP_KEY_PLUS, "A-right plus wins over right");
 
     dm_rp_layout an = make(DM_RP_A_RIGHT_NAV, DM_RP_KEY_NONE, 0);
     CHECK(dm_rp_hit(&an, 200, 300) == DM_RP_GESTURE, "A-right-nav left half gestures %d", dm_rp_hit(&an, 200, 300));
