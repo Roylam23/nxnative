@@ -1,24 +1,18 @@
-// NSP / XCI extraction: nx_extract <prod.keys> <base NSP|XCI> <update NSP|-> <output dir> [base RomFS dir to compare against] [--manifest]
-// An XCI's Secure partition is the base game. Its Update partition normally holds a system update, not the game's update: it is used only when its
-// Program title is the base title's update (...800). Otherwise the update must be a separate NSP, exactly as for an NSP base.
+// NSP extraction: nx_extract <prod.keys> <base NSP> <update NSP or -> <output dir> [base RomFS dir to compare against] [--manifest]
 // Writes <output dir>/ExeFS and <output dir>/RomFS (the merged RomFS when there is an update); with a base RomFS dir, files whose content matches it become APFS clones (no new space).
 // --manifest: the RomFS is not written, only a list <output dir>/romfs_manifest.tsv (path, size, first 32 bytes), for surveying a new game (a large game's RomFS is well over 10 GB).
-// --info: print the base title ID, display version and name, and the update partition's title ID and version when the file is an XCI (no extraction).
 // A damaged NSP (a file whose data fails the NCA's hash check, e.g. a copy cut short or a broken download) stops the extraction with exit code 3 after listing every damaged file;
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
-// Title keys come from the common tickets (.tik) inside the NSPs or the XCI, so only prod.keys is needed; key values are never printed.
-// A cartridge dump's (.xci, Monster Hunter Rise) secure partition holds the NCAs, which carry their keys in the key area (no ticket).
+// Title keys come from the common tickets (.tik) inside the NSPs, so only prod.keys is needed; key values are never printed.
+// The base game may also be a cartridge dump (.xci, Monster Hunter Rise): its secure partition holds the NCAs, which carry their keys in the key area (no ticket).
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using LibHac.Common;
 using LibHac.Common.Keys;
 using LibHac.Fs;
-using LibHac.Ncm;
-using LibHac.Tools.Ncm;
 using LibHac.Fs.Fsa;
 using LibHac.FsSystem;
 using LibHac.Spl;
@@ -32,27 +26,20 @@ static class P {
     [DllImport("libc", SetLastError = true)] static extern int clonefile(string src, string dst, uint flags);
 
     static int Main(string[] a) {
-        bool info = Array.IndexOf(a, "--info") >= 0; a = Array.FindAll(a, s => s != "--info");
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
-        if (info) {
-            if (a.Length < 2) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --info <game.nsp|game.xci>"); return 2; }
-            return Info(ExternalKeyReader.ReadKeyFile(a[0]), a[1]);
-        }
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp|base.xci> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --info <game.nsp|game.xci>"); return 2; }
+        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
         if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
-        var basePkg = OpenPackage(ks, a[1], false, out var xciUpdate);
-        var updPkg = a[2] == "-" ? xciUpdate : OpenPackage(ks, a[2], true, out _);
-        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base game");
-        Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the update");
+        var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
+        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
+        Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the update NSP");
         Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control);
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
-        if (updPkg != null && a[2] == "-" && IsXci(a[1])) Console.WriteLine("update: the XCI's update partition");
         string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
             byte[] nacp = Nacp(ctrl);
-            Console.WriteLine($"display version {VersionOf(nacp)}");
+            Console.WriteLine($"display version {System.Text.Encoding.ASCII.GetString(nacp, 0x3060, 0x10).TrimEnd('\0')}");
             Console.WriteLine($"name {TitleName(nacp)}");
             Directory.CreateDirectory(outDir); File.WriteAllBytes(Path.Combine(outDir, "control.nacp"), nacp);
             var (icon, lang) = Icon(ctrl);   // the game icon for the app icon, saved as <output dir>/icon.jpg (build_ipa.sh picks it up)
@@ -123,125 +110,6 @@ static class P {
         return ncas;
     }
     static Nca Pick(List<Nca> l, NcaContentType t) { foreach (Nca n in l) if (n.Header.ContentType == t) return n; return null; }
-
-    // ---- XCI: the Secure partition holds the base NCAs, and in a merged cartridge image the patch and DLC NCAs too. The Update partition normally holds a system update.
-    sealed class XciContent { public List<Nca> Base; public List<Nca> Update; public List<Nca> SystemUpdate; public uint BaseVersion; public uint UpdateVersion; }
-    static bool IsXci(string path) => path.EndsWith(".xci", StringComparison.OrdinalIgnoreCase);
-
-    static List<Nca> OpenPackage(KeySet ks, string path, bool update, out List<Nca> xciUpdate) {
-        xciUpdate = null;
-        if (!IsXci(path)) return OpenNsp(ks, path);
-        XciContent c = OpenXci(ks, path);
-        xciUpdate = c.Update;
-        return update ? (c.Update ?? new List<Nca>()) : c.Base;
-    }
-
-    static XciContent OpenXci(KeySet ks, string path) {
-        // The Xci and its partitions keep the LocalStorage alive through their storages; do not dispose it while NCAs are in use.
-        var xci = new Xci(ks, new LocalStorage(path, FileAccess.Read));
-        if (xci.HasPartition(XciPartitionType.Normal)) ImportTickets(ks, xci.OpenPartition(XciPartitionType.Normal));
-        Dictionary<string, Nca> all = ReadNcas(ks, xci, XciPartitionType.Secure);
-        var (b, bv, u, uv) = SplitByCnmt(all);
-        if (b == null) b = all.Values.Where(n => n.Header.ContentType == NcaContentType.Program).ToList();   // no CNMT: fall back to every Program
-        List<Nca> sys = null;
-        if (u == null && xci.HasPartition(XciPartitionType.Update)) {
-            Dictionary<string, Nca> upd = ReadNcas(ks, xci, XciPartitionType.Update);
-            var (ub, ubv, uu, uuv) = SplitByCnmt(upd);
-            if (uu != null) { u = uu; uv = uuv; }
-            else if (upd.Count > 0) sys = upd.Values.ToList();
-        }
-        return new XciContent { Base = b, Update = u, SystemUpdate = sys, BaseVersion = bv, UpdateVersion = uv };
-    }
-
-    static Dictionary<string, Nca> ReadNcas(KeySet ks, Xci xci, XciPartitionType type) {
-        var ncas = new Dictionary<string, Nca>(StringComparer.OrdinalIgnoreCase);
-        XciPartition p = xci.OpenPartition(type);
-        foreach (DirectoryEntryEx e in p.EnumerateEntries("*", SearchOptions.Default)) {
-            if (e.Type == DirectoryEntryType.Directory || !e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) continue;
-            using var f = new UniqueRef<IFile>();
-            p.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-            ncas[Path.GetFileNameWithoutExtension(e.Name)] = new Nca(ks, f.Release().AsStorage());   // <nca id>.nca or <nca id>.cnmt.nca
-        }
-        return ncas;
-    }
-
-    // A merged XCI's Secure partition holds the Application and Patch NCAs side by side; their CNMTs say which Program/Control belongs to which.
-    static (List<Nca> basePkg, uint baseVer, List<Nca> patchPkg, uint patchVer) SplitByCnmt(Dictionary<string, Nca> all) {
-        List<Nca> b = null, u = null; uint bv = 0, uv = 0;
-        foreach (var kv in all) {
-            if (!kv.Key.EndsWith(".cnmt", StringComparison.OrdinalIgnoreCase)) continue;
-            Cnmt c; try { c = ReadCnmt(kv.Value); } catch { continue; }
-            if (c == null) continue;
-            var ids = new HashSet<string>(c.ContentEntries.Select(e => Convert.ToHexString(e.NcaId).ToLowerInvariant()));
-            var pkg = ids.Select(id => all.TryGetValue(id, out Nca n) ? n : null).Where(n => n != null).ToList();
-            if (pkg.Count == 0) continue;
-            if (c.Type == ContentMetaType.Application && c.TitleVersion.Version >= bv) { b = pkg; bv = c.TitleVersion.Version; }
-            else if (c.Type == ContentMetaType.Patch && c.TitleVersion.Version >= uv) { u = pkg; uv = c.TitleVersion.Version; }
-        }
-        return (b, bv, u, uv);
-    }
-
-    static Cnmt ReadCnmt(Nca meta) {
-        IFileSystem fs = meta.OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.None);
-        foreach (DirectoryEntryEx x in fs.EnumerateEntries("*", SearchOptions.Default)) {
-            if (!x.Name.EndsWith(".cnmt", StringComparison.OrdinalIgnoreCase)) continue;
-            using var f = new UniqueRef<IFile>();
-            fs.OpenFile(ref f.Ref, x.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-            f.Get.GetSize(out long n).ThrowIfFailure();
-            var bytes = new byte[n]; f.Get.Read(out _, 0, bytes, ReadOption.None).ThrowIfFailure();
-            return new Cnmt(new MemoryStream(bytes));
-        }
-        return null;
-    }
-
-    static void ImportTickets(KeySet ks, XciPartition p) {
-        foreach (DirectoryEntryEx e in p.EnumerateEntries("*", SearchOptions.Default)) {
-            if (e.Type == DirectoryEntryType.Directory || !e.Name.EndsWith(".tik", StringComparison.OrdinalIgnoreCase)) continue;
-            using var f = new UniqueRef<IFile>();
-            p.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
-            byte[] t = new byte[0x2c0]; f.Get.Read(out _, 0, t, ReadOption.None).ThrowIfFailure();
-            if (t[0x281] != 0) continue;   // not a common ticket; the XCI header's key area may still provide the key
-            ks.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0, 0x10)), new AccessKey(t.AsSpan(0x180, 0x10))).ThrowIfFailure();
-        }
-    }
-
-    // --info: what the packing script needs to identify an XCI before extracting it
-    static int Info(KeySet ks, string path) {
-        XciContent xci = IsXci(path) ? OpenXci(ks, path) : null;
-        List<Nca> basePkg = xci != null ? xci.Base : OpenNsp(ks, path);
-        List<Nca> xciUpdate = xci?.Update;
-        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base game");
-        Console.WriteLine($"title {baseProg.Header.TitleId:x16}");
-        if (xci != null) {
-            Console.WriteLine($"base_v {xci.BaseVersion}");
-            if (xci.Update != null) Console.WriteLine($"update_v {xci.UpdateVersion}");
-        }
-        Nca baseCtrl = Pick(basePkg, NcaContentType.Control);
-        if (baseCtrl != null) {
-            byte[] nacp = Nacp(baseCtrl);
-            Console.WriteLine($"base_version {VersionOf(nacp)}");
-            Console.WriteLine($"name {TitleName(nacp)}");
-        }
-        Nca updProg = xciUpdate != null ? Pick(xciUpdate, NcaContentType.Program) : null;
-        Nca uctrl = xciUpdate != null ? Pick(xciUpdate, NcaContentType.Control) : null;
-        if (uctrl != null) {
-            byte[] nacp = Nacp(uctrl);
-            Console.WriteLine($"version {VersionOf(nacp)}");
-            Console.WriteLine($"update_version {VersionOf(nacp)}");
-        } else if (baseCtrl != null) {
-            Console.WriteLine($"version {VersionOf(Nacp(baseCtrl))}");
-        }
-        if (updProg != null) {
-            Console.WriteLine($"update {updProg.Header.TitleId:x16}");
-            if (uctrl != null) Console.WriteLine($"update_name {TitleName(Nacp(uctrl))}");
-        } else if (xci?.SystemUpdate != null) {
-            Nca sysProg = Pick(xci.SystemUpdate, NcaContentType.Program);
-            if (sysProg != null) Console.WriteLine($"system_update {sysProg.Header.TitleId:x16}");
-        }
-        return 0;
-    }
-
-    static string VersionOf(byte[] nacp) => System.Text.Encoding.ASCII.GetString(nacp, 0x3060, 0x10).TrimEnd('\0');
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order
     static readonly string[] IconLangs = { "AmericanEnglish", "BritishEnglish", "Japanese", "French", "German", "LatinAmericanSpanish", "Spanish", "Italian",

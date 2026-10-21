@@ -10,7 +10,6 @@ import os, re, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STAGES = {'vs': 0, 'ps': 1, 'gs': 2, 'hs': 3, 'ds': 4, 'cs': 5}   # NVN shader stage numbers
 
 
 class Game:
@@ -89,17 +88,15 @@ def header(g):
     """the host's game_profile.h: the profile constants the host uses, as macros"""
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
     mods = g.words('modules')
-    ssbo = dict(g.pairs('nvn_ssbo_bases'))
-    sb = ' : '.join(f'(stage) == {STAGES[k]} ? {v}' for k, v in ssbo.items()) + ' : -1'
     vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
     if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
-    fs = g.get('frame_step', 'ticks')   # the frame step's method: ticks = whole vsyncs decided by the host (nvn_fstep.h), legacy = each game's earlier method (for the iPhone A/B test)
-    if fs not in ('ticks', 'legacy'): sys.exit(f'{g.id}: frame_step must be ticks or legacy: {fs}')
     cp = g.get('core_preempt', 'off')   # same-core preemption approximation (hle_thread.c): on / off
     if cp not in ('on', 'off'): sys.exit(f'{g.id}: core_preempt must be on or off: {cp}')
+    aba = g.get('alloc_big_align', 'off')   # nn::mem::StandardAllocator::Allocate aligns blocks of 64 KB or more to 64 KB (hle_os.c; Vanillaware's memory pool storage): on / off
+    if aba not in ('on', 'off'): sys.exit(f'{g.id}: alloc_big_align must be on or off: {aba}')
     sf = g.get('shared_font', 'bfttf')   # what the shared-font address points at (hle_sdk16.c): bfttf = 8-byte header + TTF, ttf = the TTF alone
     if sf not in ('bfttf', 'ttf'): sys.exit(f'{g.id}: shared_font must be bfttf or ttf: {sf}')
     pl = g.get('pad_layout', 'simple')   # the virtual gamepad's first layout (DmGamepad.m; afterwards whatever the player switched to in game is kept): simple = 2D, full = 3D (D-pad, right stick, L3 / R3), rhythm = the two-zone rhythm pad (DmRhythmPad.m)
@@ -114,14 +111,18 @@ def header(g):
     if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload must be on or off: {tfu}')
     tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
-    lna = g.get('linear_cpu_no_access', 'off')   # linear textures in CPU_NO_ACCESS pools use the guest buffer (nvn_mtl.m tex_linear; Rhythm Heaven Groove's glyphs)
-    if lna not in ('on', 'off'): sys.exit(f'{g.id}: linear_cpu_no_access must be on or off: {lna}')
+    tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
+    if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
     vcr = g.get('vconv_range', 'off')   # vertex attributes converted on the CPU only over the vertices each draw reads (nvn_mtl.m vc_draw_range): on / off
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
+    mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
+    if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
+    pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
+    if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api must be major.minor: {api}')
     # Rhythm pad: scene → the key the left half of the screen sends (DmRhythmPad.m, dm_touch_layout.c). The profile file is
@@ -163,33 +164,28 @@ def header(g):
          f'#define DM_GAME_MEM_STACK {g.int("mem_stack"):#x}ull',
          f'#define DM_GAME_APP_POOL {g.int("app_pool"):#x}ull',
          f'#define DM_GAME_MEM_USED {int(g.get("mem_used", "0x4000000"), 0):#x}ull',   # used memory reported beside the heap (hle_svc.c GetInfo UsedMemorySize)
-         f'#define DM_GAME_NVN_SSBO_BASE(stage) ({sb})',
-         f'#define DM_GAME_NVN_TEX_BASE {g.int("nvn_tex_base"):#x}',
-         f'#define DM_GAME_NVN_TEX_SLOTS {g.int("nvn_tex_slots")}',
-         f'#define DM_GAME_NVN_SAMP_BASE {g.int("nvn_samp_base"):#x}',
-         f'#define DM_GAME_NVN_IMG_BASE {g.int("nvn_img_base"):#x}',
-         f'#define DM_GAME_NVN_IMG_SLOTS {g.int("nvn_img_slots")}',
-         *([f'#define DM_GAME_NVN_SEPTEX_BASE {g.int("nvn_septex_base"):#x}', f'#define DM_GAME_NVN_SEPTEX_SLOTS {g.int("nvn_septex_slots")}'] if g.get('nvn_septex_base', '') else []),   # a separate texture table of its own (Monster Hunter Rise)
+         f'#define DM_GAME_ARGS {q(g.get("game_args", ""))}',   # game arguments when the command line gives none (main.c; Octopath Traveler 0: Unreal's -SwitchVirtualAddressSpaceSize=)
+         f'#define DM_GAME_MEM_MAP_LIMIT {int(mml == "on")}',
          f'#define DM_GAME_DISPLAY_VERSIONS {vers}',
          f'#define DM_GAME_PRESENT_DISPLAY {int(pi == "display")}',
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
+         f'#define DM_GAME_ALLOC_BIG_ALIGN {int(aba == "on")}',
          f'#define DM_GAME_FPS_TARGET {int(ft)}',
-         f'#define DM_GAME_FRAME_STEP_LEGACY {int(fs == "legacy")}',
-         f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}',
+         *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_FULL {int(pl == "full")}',
          f'#define DM_GAME_PAD_RHYTHM {int(pl == "rhythm")}',
          *tl_def,
          f'#define DM_GAME_OPMODE {int(om == "console")}',
+         f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
-         f'#define DM_GAME_LINEAR_CPU_NO_ACCESS {int(lna == "on")}',
+         f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
-         f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}',
-         f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}',
+         *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']
     return '\n'.join(L)
 

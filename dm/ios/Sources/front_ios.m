@@ -101,7 +101,6 @@ static void front_ios_power_watch(void) {
 }
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-uint64_t front_game_res(int docked) { return docked ? 900ull << 32 | 1600 : 720ull << 32 | 1280; }   // Same as Mac: the original 16:9 constants
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
 
 // Software keyboard: show a UIAlertController on the main thread, the calling thread waits for the result
@@ -122,15 +121,15 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
         if (!vc) { dispatch_semaphore_signal(done); return; }
         [vc presentViewController:ac animated:YES completion:nil];
     });
-    guest_clock_freeze_for(2, 1);
+    // The guest clock keeps running meanwhile, as on the Switch (hle_swkbd.c): a freeze here as well stopped Octopath Traveler 0's frame loop for as long as the box was up and made its sound stutter
+    // (4,977 ms and 2,577 ms frames, 5,181 wakeups a second). The inline keyboard freezes around its own call (hle_swkbd.c)
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
-    guest_clock_freeze_for(2, 0);
     if (!r) return 0;
     snprintf(out, out_cap, "%s", text.UTF8String ? text.UTF8String : "");
     return 1;
 }
 
-// Save write failed (most likely the phone's storage is full): show a notice on the main thread without blocking the game (as d2r-mobile does). hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
+// Save write failed (most likely the phone's storage is full): show a notice on the main thread without blocking the game. hle_fs.c calls this when a save transaction is refused or a mount has to fall back to read-only;
 // the iOS front end used not to implement it, so there was only a log line and the player never learned that progress was not being saved
 void front_save_failed(int err) {
     LOG("front end: save data write failed errno=%d, telling the player", err);

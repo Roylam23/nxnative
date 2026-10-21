@@ -42,5 +42,7 @@ t_xv
 t_xv.dSYM/
 t_ub
 t_ub.dSYM/
+t_vbuf
+t_vbuf.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/

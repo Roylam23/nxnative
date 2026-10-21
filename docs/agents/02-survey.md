@@ -2,7 +2,7 @@
 
 Do this before touching the host. Every item answers "what will break, and how much work is it".
 
-**The first pass is automatic.** Run `scripts/build_ipa.py` on the title's game folder, or on a single base `.nsp` / `.xci` file. When no game profile (`dm/games/*/game.tsv`) has its title ID, the script does no build. It extracts only the code modules plus a RomFS manifest (`nx_extract --manifest`: path, size and first 32 bytes of every file, with no game files written). It then writes `<game folder>/<title ID>_survey/survey.md`, which covers:
+**The first pass is automatic.** Run `scripts/build_ipa_from_nsp.py` on the title's NSP folder. When no game profile (`dm/games/*/game.tsv`) has its title ID, the script does no build. It extracts only the code modules plus a RomFS manifest (`nx_extract --manifest`: path, size and first 32 bytes of every file, with no game files written). It then writes `<NSP folder>/<title ID>_survey/survey.md`, which covers:
 
 - game name and display version (from the NACP). Newer SDKs compress the NACP's title area: a u16 size, then raw deflate that inflates to 32 language entries of 0x300 bytes (Mario 1.2.1 does this). LibHac 0.19 does not decode it; `nx_extract` and the script do;
 - base / update / DLC NSPs;
@@ -43,12 +43,12 @@ The tables below are what to check by hand afterwards.
 ## SVCs and instructions to rewrite
 
 - `dm/tools/insn_census.py <module.nso> [--sites tsv]` counts every site the rewriter must handle: `svc`, `mrs/msr tpidr*`, `x18` use, exclusive windows (`ldxr`/`stxr`), timers (`cntpct`, `cntfrq`), cache maintenance, and system registers.
-- Run `DM_RULESET=native python3 dm/tools/patch_nso.py <nso> <out dir> <name>` and check that its counts match the census. New system registers appear with new SDKs: SDK 16 reads `CTR_EL0` (macOS traps it), now rewritten to a constant.
+- Run `python3 dm/tools/patch_nso.py <nso> <out dir> <name>` and check that its counts match the census. New system registers appear with new SDKs: SDK 16 reads `CTR_EL0` (macOS traps it), now rewritten to a constant.
 - Mario's SVC set was a subset of D2R's. A new SVC needs a case in `hle_svc.c` / `hle_thread.c`; the default case logs `SVC %#x … (placeholder returns success)` once and returns success, which is wrong for anything that returns data.
 
 ## NVN surface
 
-- Find how the game obtains NVN entry points. D2R wrote slots with `adrp`-to-slot code (`dm/gfx/tools/nvn_slots.py`); Mario's loader (`main+0x1070910`) calls `GetProcAddress` per name and stores through the GOT (`dm/tools/nvn_slots_got.py <main.bin> <loader> <text end> <out tsv>`). The output lists every fetched function and every call site.
+- Find how the game obtains NVN entry points. Some games write the slots with `adrp`-to-slot code; Mario's loader (`main+0x1070910`) calls `GetProcAddress` per name and stores through the GOT (`dm/tools/nvn_slots_got.py <main.bin> <loader> <text end> <out tsv>`). The output lists every fetched function and every call site.
 - Mario fetched 534 functions and called 236 of them; 79 were new to the host (CommandBuffer 31, Texture 15, Buffer 10, Sampler 10). Names the host doesn't know at all go into `dm/gfx/nvn/names.txt` → `gen_protos.py`.
 
 ## Data containers that matter to the host

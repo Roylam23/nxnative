@@ -1,10 +1,9 @@
 #!/bin/bash
-# Build one unsigned IPA: the rewritten modules compiled into the executable and the iOS shader libraries at DmIOS.app/msl. The default is a small split IPA: the game files (RomFS) stay out, and the app reads Documents/romfs (put there through the Files app); with no output path the name gets ...-split.ipa.
-# SPLIT_IPA=0 builds the all-in-one IPA with the game files at DmIOS.app/romfs (large; only for a fresh install or a device without Documents/romfs).
-# Xcode builds only the app; tools/pack_ipa.py then packs it with the shader libraries, the add-on content and (for SPLIT_IPA=0) the RomFS straight from where they are (no Payload/ copy, nothing through the home disk). At install time a signing tool (AltStore / Sideloadly etc.) swaps in your own certificate and bundle ID.
+# Build one unsigned all-in-one IPA: the rewritten modules compiled into the executable, iOS shader libraries at DmIOS.app/msl, and the game files (RomFS) at DmIOS.app/romfs.
+# Xcode builds only the app; tools/pack_ipa.py then packs it with the shader libraries, the add-on content and the RomFS straight from where they are (no Payload/ copy, nothing through the home disk). At install time a signing tool (AltStore / Sideloadly etc.) swaps in your own certificate and bundle ID.
 # Prerequisites: the rewriter (patched directory) and the iOS shader build (IOSOUT) have been run as in the README; Xcode and xcodegen are installed.
-# Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden, SPLIT_IPA=0 for the all-in-one IPA (default: split)
-#   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none)
+# Usage: dm/ios/tools/build_ipa.sh [output.ipa]; environment: GAME=game profile (dm/games/<base game title ID>, or one in DM_GAMES_DIR; required), W=the game's work folder (required: <NSP folder>/<title ID>-work, never the home folder), PATCHED / ROMFS / MSL_IOS can each be overridden
+#   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the app version is the display version in the packed game's control data (the one next to the RomFS:
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.nxnative.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
 #   the IPA name, code modules, RomFS marker and shader tables come from the game profile
@@ -17,36 +16,21 @@ export GAME; GD=$(python3 "$DM/games/game.py" dir "$GAME") || die "no game profi
 gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }   # read a key of the game profile
 [ -f "$GD/game.tsv" ] || die "no game profile $GD/game.tsv"
 [ -n "${W:-}" ] || die "W is not set: W=<NSP folder>/$GAME-work (the game's work folder) $0"
-# legacy=1: A16 / iPhone 14 Pro Max variant. 3 shared fonts, software BC + ASTC cache, .legacy bundle ID.
-LEGACY=${LEGACY:-0}
-SPLIT_IPA=${SPLIT_IPA:-1}
-if [ "$LEGACY" = 1 ]; then
-  DM_BC_ASTC=${DM_BC_ASTC:-$W/astc-cache}
-  if [ -z "${DM_ENV_FILE:-}" ]; then
-    DM_ENV_FILE=$W/legacy_env.txt
-    printf 'DM_LANG=en-US\nDM_NVN_BC7_UPLOAD=1\nDM_NVN_BC_SOFTWARE=1\nDM_LEGACY=1\nDM_OPMODE=0\n' > "$DM_ENV_FILE"
-  fi
-fi
 PKG=$(gp package)
 PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
-OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}
-if [ "$SPLIT_IPA" = 1 ] && [ $# -eq 0 ]; then OUT_IPA=${OUT_IPA%.ipa}-split.ipa; fi
-O=$W/build/ios/pkg; DD=$O/dd
+OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}; O=$W/build/ios/pkg; DD=$O/dd
 MODS=$(gp modules); MARKER=$(gp romfs_marker)
 NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control.nacp
 [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
-if [ "$LEGACY" = 1 ]; then
-  DM_DISPLAY_NAME="$DM_DISPLAY_NAME Legacy"
-  DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z').legacy}
-fi
 VNACP=$(dirname "$ROMFS")/control.nacp; [ -f "$VNACP" ] || VNACP=$W/data/v0/control.nacp
 [ -n "${DM_APP_VERSION:-}" ] || DM_APP_VERSION=$(python3 "$DM/tools/nacp.py" --version "$VNACP") || { t "no display version in $VNACP: the app version is 1.0"; DM_APP_VERSION=1.0; }
 export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z')} DM_DISPLAY_NAME DM_APP_VERSION DM_APP_CATEGORY=$(gp app_category) DM_TEAM_ID=${DM_TEAM_ID:-0000000000}   # placeholder identity: unsigned, the install tool replaces it
 for f in $MODS; do [ -f "$PATCHED/$f.patched.bin" ] && [ -f "$PATCHED/$f.fixups.tsv" ] || die "no rewritten module $PATCHED/$f (run dm/tools/patch_nso.py first)"; done
 [ -e "$ROMFS/$MARKER" ] || die "no RomFS at $ROMFS (missing $MARKER)"
 V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$GD/dmsh_chain.h")
-# graphics vulkan (Hades): the shaders are the game's SPIR-V, translated by dm/gfx/tools/vk_shaders.py into $MSL_IOS/vk; there are no NVN chain libraries
-GFXAPI=$(python3 "$DM/games/game.py" "$GAME" graphics 2> /dev/null) || GFXAPI=nvn
+# A Vulkan game (Hades): the shaders are the game's SPIR-V, translated by dm/gfx/tools/vk_shaders.py into $MSL_IOS/vk; there are no NVN chain libraries. GFXAPI=nvn / vulkan says which
+# (the NSP script passes what main imports); without it, the shader libraries in $MSL_IOS tell: the chain's b-$V, else vk
+if [ -z "${GFXAPI:-}" ]; then if ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$'; then GFXAPI=nvn; elif [ -f "$MSL_IOS/vk/vk_shaders.metallib" ]; then GFXAPI=vulkan; else GFXAPI=nvn; fi; fi
 if [ "$GFXAPI" = vulkan ]; then [ -f "$MSL_IOS/vk/vk_shaders.metallib" ] || die "no iOS Vulkan shader library $MSL_IOS/vk (dm/gfx/tools/vk_shaders.py \"$ROMFS\" <Mac dir> --ios \"$MSL_IOS\")"
 else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"; fi
 
@@ -56,7 +40,7 @@ rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
 python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
 F=$(python3 tools/gen_embed.py "$PATCHED" Gen/embed.S $MODS) || die "gen_embed"
 echo "OTHER_LDFLAGS = \$(inherited) \$(DM_FRAMEWORKS) $F" >> Gen/dm.xcconfig
-cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.params.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv Gen/dm/ || die "copy rewriter tables"
+cp "$PATCHED"/*.fixups.tsv "$PATCHED"/*.gates.tsv "$PATCHED"/*.cuts.tsv "$PATCHED"/*.obs.tsv Gen/dm/ || die "copy rewriter tables"
 if [ "$GFXAPI" = vulkan ]; then cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" Gen/dm/ || die "copy shader tables"   # empty NVN tables: the NVN layer is never used
 else cp "$GD/shader_map.tsv" "$GD/pso_manifest.tsv" "$GD/c1_full.tsv" Gen/dm/ || die "copy shader tables"; fi
 # Diagnostic build: DM_ENV_FILE=file → dm/env.txt in the bundle (main.m sets one environment variable per line at boot)
@@ -65,9 +49,7 @@ if [ -n "${DM_ENV_FILE:-}" ]; then cp "$DM_ENV_FILE" Gen/dm/env.txt || die "copy
 if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
 # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
 mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" Gen/dm/font/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
-${FONT_PY:-python3} "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
-# Optional offline BC → ASTC cache (A16 / 6 GB): made by make_astc_cache.py from a DM_NVN_BC_DUMP run
-if [ -n "${DM_BC_ASTC:-}" ]; then mkdir -p Gen/dm/bc_astc; cp -cR "$DM_BC_ASTC"/* Gen/dm/bc_astc/ || die "copy BC ASTC cache"; t "BC ASTC cache: $(ls "$DM_BC_ASTC" | wc -l | tr -d ' ') files"; fi
+"${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
 # App icon: the game's own icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one). DM_ICON can point at another image; by default the icon.jpg next to the RomFS is used.
 # It is scaled to a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes); with neither, no icon is set and the home-screen icon is blank.
 # The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set
@@ -97,7 +79,7 @@ APP=$DD/Build/Products/Release-iphoneos/DmIOS.app; [ -d "$APP" ] || APP=$(grep -
 rm -rf "$APP/msl" "$O/Payload" "$O/out.ipa"   # (the last two: what the copy-and-zip packing left behind)
 P=Payload/DmIOS.app; MAPS=("$P=$APP" "$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR")
 if [ -n "$AOC" ] && [ -d "$AOC" ]; then MAPS+=("$P/aoc=$AOC"); t "add-on content: $(ls "$AOC" | tr '\n' ' ')"; fi
-if [ "$SPLIT_IPA" = 1 ]; then t "split IPA: RomFS is not packed; the device needs Documents/romfs"; else MAPS+=("$P/romfs=$ROMFS"); fi
+MAPS+=("$P/romfs=$ROMFS")
 t "pack IPA (already-compressed game files stored, everything else deflated)"
 python3 tools/pack_ipa.py "$OUT_IPA" --store "$(gp zip_store)" --skip $P/_CodeSignature --skip $P/embedded.mobileprovision --skip $P/msl --skip $P/aoc --skip $P/romfs "${MAPS[@]}" || die "pack_ipa"
 t "done: $OUT_IPA ($(du -h "$OUT_IPA" | cut -f1))"

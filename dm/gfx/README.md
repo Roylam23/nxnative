@@ -10,7 +10,7 @@ For the build steps of the whole project see `README.md` and `setup.sh` in the r
 
 - The game's main program imports only one NVN symbol, `nvnBootstrapLoader`; all other NVN functions are obtained through it by name. The host forcibly takes over this import (`nvn/hle_nvn.c`), and not a single instruction of the original graphics driver is executed.
 - The game fetches the addresses of 523 names in total (`nvn/names.txt`). Each name has a thunk (`nvn/nvn_thunks.S`, a generated file): it first increments that function's call count and then jumps to the implementation.
-- Of these, the 216 that have call sites in the game's main program (`nvn/nvn_slots.tsv`) all have implementations: 203 are implemented according to NVN semantics, and 13 are empty implementations (`g_nops` in `hle_nvn.c`). The remaining 307 are connected to a red-reporting stub that, when called, prints `[RED] NVN unimplemented function called: <name>` in the log.
+- The functions games call have implementations, according to NVN semantics or empty (`g_nops` in `hle_nvn.c`); the rest are connected to a red-reporting stub that, when called, prints `[RED] NVN unimplemented function called: <name>` in the log.
 - Every implementation gets a compile-time signature check against `nvn/nvn_protos.h` (a generated file). The calling conventions of Apple arm64 and the Switch differ for integer parameters narrower than 32 bits, so on the host side `NVNboolean` parameters are always received as `uint32_t` and only the low 8 bits are examined.
 
 ### Two layers: record and replay
@@ -36,8 +36,6 @@ Original Switch shader package
   → xcrun metal / metallib  compiles into Metal shader libraries
 ```
 
-Without Apple's Metal compiler (Windows, Linux, a Mac without Xcode) the last step cannot be done. `tools/nometal_run.py` lets the same chain run its first two steps as usual and puts the translated MSL source into the library files as is; a package made this way compiles the shaders once on the phone, and the system caches the compiled result. This route is used by `dm/tools/d2rm_pack.py`; see `docs/NO_XCODE.md` in the repository root.
-
 The whole chain is driven by `tools/dmsh_build.py`, and `setup.sh` runs it for you. Key points:
 
 - **Key**: each shader is keyed by the first 16 hexadecimal digits of the sha256 of its control section (the first 0x880 bytes, or the section's own length at control +0x20 when that is shorter, as in SDK 10's 0x850-byte sections) followed by its code area (many of Mario's shaders share a control section and differ in code). At run time the game hands both to `nvnProgramSetShaders`, and the replay layer computes the same key to find the library.
@@ -56,10 +54,10 @@ The whole chain is driven by `tools/dmsh_build.py`, and `setup.sh` runs it for y
 - **`dm/games/<id>/pso_manifest.tsv`**: the warm-up seed manifest bundled with the app: shaders (`S`), render pipelines (`R`, the hex of `pso_skey` in `nvn/nvn_pso_skey.h`) and compute pipelines (`C`) to pre-build at startup. The row order is the pre-build order (first use); do not sort it. Its companion is `pso_user.tsv`, which the host appends next to the save directory whenever it has to build something on the spot, and which is pre-built after the seed at the next launch. Both name shaders by key and describe pipeline settings only, so a list recorded on one device works on any other; lines a build cannot use are skipped. Recorded lines can be appended to the seed below its header (currently empty).
 - **Shaders embedded in the program itself**: the main program additionally contains 4 compute shaders that are not in the shader package; they were hand-written as MSL from the disassembly and are in `nvn/nvn_builtin.h`.
 
-Binding conventions followed during translation (file header of `tools/maxwell_refs.py`):
+Binding conventions followed during translation (the NVN driver's layout, the same in every game: `tools/dmsh_build.py`, filled at run time by `nvn/nvn_mtl.m`):
 
 - uniform buffer r is constant section `c[3 + r]` in the machine code;
-- the handle of separate texture r is at `c[2][0x168 + 8r]`, and the handle of separate sampler r is at `c[2][0x568 + 8r]`;
+- the handle of combined texture r (`nvnCommandBufferBindTexture`) is at `c[2][0x20 + 8r]`, of image r at `c[2][0x120 + 8r]`, of separate texture r at `c[2][0x168 + 8r]` (the host's texture slot 128 + r) and of separate sampler r at `c[2][0x568 + 8r]`;
 - the address of storage buffer r is at `c[0][base + 16r]`, with base: vertex 0x110, compute 0x310, fragment 0x510;
 - the window origin is at the top left and the depth range is 0 to 1, the same as Metal, so nothing is flipped during translation.
 
@@ -77,7 +75,7 @@ Binding conventions followed during translation (file header of `tools/maxwell_r
 | `nvn/nvn_hmap.h`, `nvn/nvn_cover.h`, `nvn/nvn_pace.h`, `nvn/nvn_pso_skey.h` | Hash table, geometric proof of full-coverage draws, presentation pacer, pipeline manifest key |
 | `nvn/nvn_builtin.h` | Hand-written MSL for the 4 compute shaders embedded in the main program |
 | `nvn/include/nvn.h` | NVN interface declarations (third party; for the license see the file header) |
-| `nvn/names.txt`, `nvn/nvn_slots.tsv` | The NVN API name list and D2R's slot evidence. The per-game tables described above and `dmsh_chain.h` live in the game profile `dm/games/<id>/` (named after the base game's title ID; tools pick it with `DM_GAME`, make with `GAME`; there is no default game) |
+| `nvn/names.txt` | The NVN API name list. The per-game tables described above and `dmsh_chain.h` live in the game profile `dm/games/<id>/` (named after the base game's title ID; tools pick it with `DM_GAME`, make with `GAME`; there is no default game) |
 | `tex/` | Texture format mapping, deswizzling, BC decompression, see [tex/README.md](tex/README.md) |
 | `metal/` | A standalone minimal Metal offscreen example, not compiled into the host, see [metal/README.md](metal/README.md) |
 | `tools/` | Offline tools, see below |
@@ -91,15 +89,13 @@ The scripts in `tools/`; usage is written in each file's header:
 | `dmsh_xlate/` | The shader translation tool (C#), which references the translation library in `dm/third_party/ryujinx` |
 | `dmsh_build.py` | Drives the whole translation chain to produce the shader libraries; when the environment variable `IOSOUT=directory` is set, it also produces the iOS version |
 | `dmsh_chain.py`, `dmsh_chain.lock` | Translation chain version and tool fingerprints |
-| `dmsh_facts.py` | Generation and checking of the answer table `shader_facts.tsv` |
+| `dmsh_facts.py` | Reads the answer table `shader_facts.tsv` (which `shader_split.py` writes) |
 | `dmsh_fetch.py` | Generates the "readable tile" versions of fragment shaders |
 | `c1_guard.py` | Generates `c1_full.tsv` |
 | `dmsh_dryrun.py` | Dry-run conversion of the whole library, measuring only "can it be converted" |
-| `shader_map.py`, `maxwell_refs.py` | Generates the shader map; reads resource references from the machine code |
-| `nvn_slots.py`, `gen_protos.py` | Generate `nvn_slots.tsv` / `names.txt`, and `nvn_protos.h` / the thunks |
+| `gen_protos.py` | Generates `nvn_protos.h` / the thunks |
 | `tbdr_budget.py`, `tbdr_load_dead.py`, `tbdr_store_dead.py`, `tbdr_pass_merge.py` | Read the `DM_NVN_PASSDUMP` log and analyze the load / store volume of each render pass's attachments per frame |
 | `passgpu_top.py` | Reads the `DM_NVN_PASSGPU` output and lists GPU time by pass |
-| `nometal_run.py` | Runs this translation chain on a machine without Apple's Metal compiler: shaders go into the libraries as source and are compiled on the phone |
 
 ## Building
 
@@ -112,7 +108,7 @@ The shader libraries are generated by `setup.sh`:
 
 After changing a file on the translation chain, the order for rebuilding manually is the same as in `setup.sh`: `dmsh_chain.py --header` → `dmsh_build.py` → `c1_guard.py` → recompile the host.
 
-The per-shader cache key in `dmsh_build.py` (`shader_key`) covers the profile's `nvn_*` / `shader_*` rows and the shader's pairs, and a paired vertex shader's key also takes its pixel shaders' keys (`pair_keyed`), since `vs_pad` reads their MSL. Before, these were only in the chain version, so a build after changing only them hit the old per-shader entries and filed them under the new version. `$DM_ROOT` defaults to `~/dm-work`.
+The per-shader cache key in `dmsh_build.py` (`shader_key`) covers the profile's `shader_*` rows and the shader's pairs, and a paired vertex shader's key also takes its pixel shaders' keys (`pair_keyed`), since `vs_pad` reads their MSL. Before, these were only in the chain version, so a build after changing only them hit the old per-shader entries and filed them under the new version. `$DM_ROOT` defaults to `~/dm-work`.
 
 ## Tests
 

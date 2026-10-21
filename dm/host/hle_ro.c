@@ -8,13 +8,6 @@
 
 HLE_FORCE("_ZN2nn2ro10InitializeEv", "connect to the ldr:ro service; the host has none, symbol lookups search the loaded modules directly", Result, h_ro_Initialize, void) { LOG("init takeover: ro::Initialize (no-op)"); return 0; }
 
-// SDK 21 (Rhythm Heaven Groove) calls this from the module's DSO init after applying its RELR relocations. On the device it asks the kernel to make the
-// relocation-table pages read-only; the host has no such permission change to make, and the game only checks that the call succeeded.
-HLE_FORCE("_ZN2nn2ro12ProtectRelroEPKvS2_S2_S2_S2_", "mark the module's relro ranges read-only; the host memory is already writable-on-demand and the call only needs to succeed", void, h_ro_ProtectRelro,
-          const void *a, const void *b, const void *c, const void *d, const void *e) {
-    (void)a; (void)b; (void)c; (void)d; (void)e;
-}
-
 HLE_FORCE("_ZN2nn2ro12LookupSymbolEPmPKc", "look up a definition by name in the loaded modules", Result, h_ro_LookupSymbol, uintptr_t *out, const char *name) {
     void *p = name ? guest_sym(name) : NULL;
     static int n; if (n++ < 40) LOG("ro::LookupSymbol %s → %p", name ? name : "(null)", p);
@@ -34,6 +27,13 @@ HLE_FORCE("_ZN2nn2ro13GetBufferSizeEPmPKv", "NROs are not loaded", Result, h_ro_
 HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "NROs are not loaded", Result, h_ro_LoadModule, void *m, const void *image, void *buf, size_t size, int flag) {
     (void)m; (void)image; (void)buf; (void)flag; static int red; if (!red++) LOG("[RED] ro::LoadModule: the host does not load NROs (buffer %#zx)", size); return RO_FAIL;
 }
+
+// SDK 19 adds a bool after the bind flag (Hades II imports only this form, for its Epic Online Services NRO)
+HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib", "NROs are not loaded", Result, h_ro_LoadModule2, void *m, const void *image, void *buf, size_t size, int flag, int b) {
+    (void)b; return h_ro_LoadModule(m, image, buf, size, flag);
+}
+
+HLE_FORCE("_ZN2nn2ro8FinalizeEv", "Initialize opened no ldr:ro session", void, h_ro_Finalize, void) { }
 
 HLE_FORCE("_ZN2nn2ro12UnloadModuleEPNS0_6ModuleE", "NROs are not loaded", void, h_ro_UnloadModule, void *m) { (void)m; }
 

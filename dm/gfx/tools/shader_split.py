@@ -12,11 +12,13 @@
 #       block = control section + code area. A program's vertex / pixel stages form a pair. The game's own serialized files (data.unity3d, unity default resources) carry no type trees and borrow the bundles' Shader type tree of the same hash (second pass)
 #       Before 2019.3 (Cuphead, Unity 2017.4; found by armyja, GitHub pull request #2) a subprogram holds one stage: program code = a 0x10 header {?, ?, control length, code length} + control section
 #       + code area, and the stage is not in the code but in the Shader's m_ParsedForm (unity_stages)
+#       Unity 2022 (Ace Attorney Investigations Collection, 2022.3) keeps the 0x60 header in the program code, but the blob also holds parameter entries, which unity_code_blobs leaves out
 #   · MSHD (MercurySteam, Metroid Dread system/shd/*.bshdat): each stage = a control section (+0x20 = control length; sometimes a small compiler option table follows) + the code area starting at the next code header;
 #       NV assembly text follows the first 0x880 bytes of the control section, and SASS disassembly text follows the code area. All 478 files hold "vertex, pixel" in pairs (1, 2 or 4 pairs), paired two by two in order
 #   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
+#   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -30,11 +32,11 @@
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
 import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
-GLSLC = GAME.get('shader_main_glslc', 'off') == 'on'   # GLSLC compiler outputs in main (glslc_shaders)
-SEPARABLE = GAME.get('shader_separable', 'off') == 'on'   # single-stage programs combined per stage at draw time (separable_pairs)
-CAPTURE = GAME.get('shader_glslc_capture', 'off') == 'on'   # GLSLC outputs the game compiles at run time, captured on the Mac (DM_GLSLC_CAPTURE, hle_glslc.c)
+# The sources are what the game files hold, with no profile switch: GLSLC outputs in main (glslc_shaders), the outputs the game compiles at run time when a capture is there (DM_GLSLC_CAPTURE,
+# hle_glslc.c), the shader code archives of Unreal paks once decoded on the Mac (uepak.py, DM_OODLE_JOB, hle_oodle.c); the NSP script decides from the files which of the last two to make
 
 CTL_MAGIC, GFX_MAGIC, CS_MAGIC = bytes.fromhex('34127698'), bytes.fromhex('78563412'), bytes.fromhex('79563412')
 STAGES = ['vs', 'hs', 'ds', 'gs', 'ps', 'cs']
@@ -51,6 +53,14 @@ def ctl_len(ctl):
 
 def skey(ctl, code):
     return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
+
+def same_shader(a, b):
+    """Two copies of one key hold the same shader: the code areas are equal, and so are the control sections up to their own length (control +0x20). Pokémon Legends: Z-A's UI layout archives
+    (__ArchiveShader.bnsh inside the .truiv packs) give 104 KB control sections whose stage descriptor length runs 456 bytes past their own length, and those trailing bytes differ between copies"""
+    (ca, ka), (cb, kb) = a, b
+    n = struct.unpack_from('<I', ca, 0x20)[0] if len(ca) >= 0x24 else len(ca)
+    n = n if 0x760 <= n <= min(len(ca), len(cb)) else max(len(ca), len(cb))
+    return ka == kb and ca[:n] == cb[:n]
 
 def check(where, st, ctl, code):
     """control section and code area consistent; returns the reason if not"""
@@ -113,8 +123,9 @@ def mshd_shaders(d, label):
 
 def glslc_shaders(d, label, need=True):
     """GLSLC compiler outputs (838 in 13 Sentinels' main read-only segment, one stage each): from the magic 0x19866891, +0x44 = the whole output's length; each output holds exactly one control section with the code area right after it (control +0x20 = control length).
-    The magic is only 4 bytes and other games' mains have it too (Fire Emblem Engage has 11), so this runs only when the profile's shader_main_glslc is on, and keeps only outputs that pass the triple check.
-    need: stop when there is none (main with shader_main_glslc on); a Koei Tecmo G2S container (idrk_shaders) may hold none.
+    The magic is only 4 bytes, so only outputs that pass the triple check are kept. Every game's main is searched: Unity's player has 11 of its own (Fire Emblem Engage, Ace Attorney Investigations
+    Collection) beside the game's shaders in its bundles, KTGL and Vanillaware's engine compile theirs into main (13 Sentinels: 838), the others have none.
+    need: stop when there is none (a capture file); a Koei Tecmo G2S container (idrk_shaders) or a main may hold none.
     SDK 6's GLSLC (output version 0x1d.2, Fire Emblem: Three Houses) writes 0x848- and 0x850-byte control sections (ctl_len's lower range) and compute code with no 0x12345679 header: the instructions
     start at code +0 (the first word is a scheduling word), and the stage then comes from the control's thread group (+0x748), which only compute sections fill. Its few version-0x1d.0 outputs keep
     something else at control +0x20 (odd values such as 0x136b), so a length that is not a multiple of 4 is not a control length"""
@@ -130,7 +141,7 @@ def glslc_shaders(d, label, need=True):
         st = 'cs' if code[:4] == CS_MAGIC or headerless_cs else SPH_STAGE.get((struct.unpack_from('<I', code, 0x30)[0] >> 10) & 0xf) if code[:4] == GFX_MAGIC else None
         if not st or check(label, st, ctl, code): continue
         out.append((f'{label}#GLSLC@{h:#x}', st, ctl, code))
-    if not out and need: red(f'{label}: the profile has shader_main_glslc on, but there is no GLSLC output')
+    if not out and need: red(f'{label}: no GLSLC output')
     return out
 
 IDRK, ZCHUNKED = b'IDRK0000', 0x100000
@@ -282,6 +293,93 @@ def kpka_shaders(path, rel, ents, out):
         for e in ents:
             if e[3] >= 0x10 and kpka_data(d, e, 4) == b'SDF\0': out.extend(sdf_shaders(kpka_data(d, e), f'/{rel}#{e[0]:016x}'))
 
+ONEPACK = b'ONEPACK\0'
+def fb_field(d, t, i):
+    """FlatBuffers: absolute offset of field i of the table at t, None when the field is absent"""
+    vt = t - struct.unpack_from('<i', d, t)[0]
+    if 4 + 2 * i >= struct.unpack_from('<H', d, vt)[0]: return None
+    off = struct.unpack_from('<H', d, vt + 4 + 2 * i)[0]
+    return t + off if off else None
+
+def fb_vec(d, t, i):
+    """FlatBuffers: (start, count) of the vector in field i"""
+    p = fb_field(d, t, i)
+    if p is None: return 0, 0
+    p += struct.unpack_from('<I', d, p)[0]
+    return p + 4, struct.unpack_from('<I', d, p)[0]
+
+def fb_refs(d, t, i):   # the tables / strings a vector of offsets points at
+    st, n = fb_vec(d, t, i)
+    return [st + 4 * k + struct.unpack_from('<I', d, st + 4 * k)[0] for k in range(n)]
+
+def fb_root(d, at=0): return at + struct.unpack_from('<I', d, at)[0]
+
+def trpfs_jobs(files, parts=64):
+    """Game Freak's Trinity engine (Pokémon Legends: Z-A): almost everything is in arc/data.trpfs, packs of files, with arc/data.trpfd as their index, both FlatBuffers. The descriptor's root table:
+    0 file hashes [u64], 1 pack names [string], 2 file infos [{0 pack index u64}] (in file hash order), 3 pack infos [{0 pack size u64, 1 file count u64}]. The file system: 'ONEPACK\\0', u64 offset of its
+    root table {0 pack name hashes [u64], 1 pack offsets [u64]}, each pack a table of its own at its offset. A pack is named through its first file's hash (its own name hash is not a plain FNV-1a of the
+    descriptor's name). → ([(path, rel, ((pack offset, pack name), …)), …] in about equal sizes, the paths taken)"""
+    import mmap
+    jobs, taken = [], set()
+    for p, r in files:
+        if not p.endswith('.trpfs') or not os.path.exists(p[:-1] + 'd'): continue
+        with open(p, 'rb') as f:
+            if f.read(8) != ONEPACK: continue
+        fd = open(p[:-1] + 'd', 'rb').read(); fr = fb_root(fd)
+        hashes = struct.unpack_from(f'<{fb_vec(fd, fr, 0)[1]}Q', fd, fb_vec(fd, fr, 0)[0])
+        names = [fd[s + 4:s + 4 + struct.unpack_from('<I', fd, s)[0]].decode() for s in fb_refs(fd, fr, 1)]
+        pack_of = {h: struct.unpack_from('<Q', fd, fb_field(fd, t, 0))[0] if fb_field(fd, t, 0) is not None else 0 for h, t in zip(hashes, fb_refs(fd, fr, 2))}
+        sizes = [struct.unpack_from('<Q', fd, fb_field(fd, t, 0))[0] for t in fb_refs(fd, fr, 3)]
+        with open(p, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+            sr = fb_root(d, struct.unpack_from('<Q', d, 8)[0]); st, n = fb_vec(d, sr, 1)
+            packs = []
+            for off in struct.unpack_from(f'<{n}Q', d, st):
+                pr = fb_root(d, off); h0 = fb_vec(d, pr, 0)
+                if not h0[1] or struct.unpack_from('<Q', d, h0[0])[0] not in pack_of: red(f'{r}: the pack at {off:#x} has no file the descriptor lists')
+                i = pack_of[struct.unpack_from('<Q', d, h0[0])[0]]; packs.append((off, names[i], sizes[i]))
+        cur, size, step = [], 0, sum(s for _, _, s in packs) / parts
+        for off, name, s in sorted(packs):
+            cur.append((off, name)); size += s
+            if size >= step: jobs.append((p, r, tuple(cur))); cur, size = [], 0
+        if cur: jobs.append((p, r, tuple(cur)))
+        taken |= {p, p[:-1] + 'd'}
+    return jobs, taken
+
+_OODLE = None
+def oodle(comp, n):
+    """The game's own OodleLZ_Decompress (Trinity's packs are Oodle Mermaid, and Oodle is linked into main): one Mac host per worker process in its tool mode (dm/host/hle_oodle.c, DM_OODLE_SERVE),
+    fed over a pipe. DM_OODLE_HOST = the host, DM_OODLE_MODULES = the rewritten modules it loads (the NSP script sets both for a game with Trinity packs, profile_guess.py shader_sources)"""
+    global _OODLE
+    if _OODLE is None:
+        import tempfile
+        host, mods = os.environ.get('DM_OODLE_HOST'), os.environ.get('DM_OODLE_MODULES')
+        if not host or not mods: red('Oodle-compressed packs: set DM_OODLE_HOST (the Mac host, make -C dm/host GAME=<id> dmhost) and DM_OODLE_MODULES (the rewritten modules) to decode them with the game\'s own decoder')
+        err = tempfile.TemporaryFile()
+        _OODLE = (subprocess.Popen([host, mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=dict(os.environ, DM_OODLE_SERVE='1')), err)
+    p, err = _OODLE
+    try:
+        p.stdin.write(struct.pack('<QQ', len(comp), n)); p.stdin.write(comp); p.stdin.flush()
+        got = struct.unpack('<Q', p.stdout.read(8))[0]
+    except (BrokenPipeError, struct.error): got = None
+    if got != n:
+        err.seek(0); red(f'the Oodle decoder in the Mac host failed on a {len(comp)} → {n} byte stream; ---- host output ----\n' + err.read().decode(errors='replace')[-3000:])
+    return p.stdout.read(n)
+
+def trinity_shaders(path, rel, packs, out):
+    """A range of Trinity packs (trpfs_jobs). Pack table: 0 file hashes [u64], 1 files [{1 compression i8 (3 = Oodle; stored otherwise), 2 level u8, 3 length u64, 4 data [u8]}]; each file is scanned like a loose one"""
+    import mmap
+    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+        for off, name in packs:
+            pr = fb_root(d, off); hs = fb_vec(d, pr, 0)
+            for k, t in enumerate(fb_refs(d, pr, 1)):
+                c, ln = fb_field(d, t, 1), fb_field(d, t, 3)
+                comp, n = (struct.unpack_from('<b', d, c)[0] if c is not None else 0), (struct.unpack_from('<Q', d, ln)[0] if ln is not None else 0)
+                st, sz = fb_vec(d, t, 4)
+                if comp == 3: data = oodle(d[st:st + sz], n)
+                elif sz == n: data = d[st:st + sz]
+                else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
+                scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
+
 def yaz0(s):
     """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
     Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
@@ -376,6 +474,15 @@ def unity_stages(o):
                 for sp in (p.get(field) or {}).get('m_SubPrograms', []): m.setdefault(sp.get('m_BlobIndex'), st)
     return m
 
+def unity_code_blobs(o):
+    """Shader object → the subprogram indices that hold program code, or None when every entry does (before Unity 2022). Unity 2022 also keeps the parameters of each program in the blob
+    as entries of their own (m_ParameterBlobIndices of each program), and the player's programs are m_PlayerSubPrograms[tier][].m_BlobIndex (Ace Attorney Investigations Collection, Unity 2022.3).
+    Both fields came together: UnityPy's type trees for 2020.3.18 (Engage) and 2021.3 have neither, so older games read every entry as before"""
+    progs = [p.get(f) or {} for sub in (o.get('m_ParsedForm') or {}).get('m_SubShaders', []) for p in sub.get('m_Passes', [])
+             for f in ('progVertex', 'progFragment', 'progGeometry', 'progHull', 'progDomain')]
+    if not any('m_ParameterBlobIndices' in p for p in progs): return None
+    return {sp['m_BlobIndex'] for p in progs for tier in p.get('m_PlayerSubPrograms', []) for sp in tier}
+
 def unity_shaders(d, label, out, trees):
     """Shaders in a UnityFS bundle or serialized file → out; raises NoTree when no type tree is available"""
     import unityfs
@@ -386,7 +493,7 @@ def unity_shaders(d, label, out, trees):
         for cid, pid, o in unityfs.serialized_objects(x, COMMON, {unityfs.CLASS_SHADER}, trees):
             name = o['m_ParsedForm']['m_Name'] if 'm_ParsedForm' in o else o.get('m_Name', '?')
             stages = unity_stages(o)
-            for plat, k, sp in unityfs.shader_programs(o):
+            for plat, k, sp in unityfs.shader_programs(o, unity_code_blobs(o)):
                 where = f'{label}{":" + node if node else ""}#{name}#var{plat}.{k}'
                 code = unityfs.subprogram(sp)[4]
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
@@ -413,15 +520,40 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
+SINGLE_STAGE = ('#GLSLC@', '#UE')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records (BNSH variations, Unity programs, MSHD and SDF pair theirs)
 def separable_pairs(keys):
-    """Single-stage programs (13 Sentinels: each GLSLC output becomes a program with one stage, and BindProgram's stage bits combine vertex and pixel programs per draw) have their real pairs only at draw time.
-    vs_pad uses only the union of the locations the paired pixel shaders read, so every vertex shader is paired with a "cover": the fewest pixel shaders whose read locations together equal those of all pixel shaders (greedy, ties go to the smaller key);
-    padded that way, a vertex shader links with any pixel shader. All pairs would be 376 × 375 rows; the cover needs a few rows × 376"""
+    """Single-stage programs (13 Sentinels: each GLSLC output becomes a program with one stage, and BindProgram's stage bits combine vertex and pixel programs per draw; Unreal combines its shaders per draw
+    from the pipeline state) have their real pairs only at draw time. vs_pad uses only the union of the locations the paired pixel shaders read, so every single-stage vertex shader is paired with
+    a "cover": the fewest pixel shaders whose read locations together equal those of all pixel shaders (greedy, ties go to the smaller key); padded that way, a vertex shader links with any pixel shader.
+    All pairs would be 376 × 375 rows; the cover needs a few rows × 376. No single-stage vertex shader, no cover"""
+    single = [v for v in keys if keys[v][1] == 'vs' and any(s in keys[v][0] for s in SINGLE_STAGE)]
+    if not single: return set(), []
     ins = {k: ps_inputs(v[3]) for k, v in keys.items() if v[1] == 'ps'}
     left, cover = set().union(*ins.values()) if ins else set(), []
     while left:
         k = min(ins, key=lambda k: (-len(ins[k] & left), k)); cover.append(k); left -= ins[k]
-    return {(v, p) for v in keys if keys[v][1] == 'vs' for p in cover}, cover
+    return {(v, p) for v in single for p in cover}, cover
+
+UE_TAG = {'SV': 'vs', 'SH': 'hs', 'SD': 'ds', 'SG': 'gs', 'SP': 'ps', 'SC': 'cs'}
+def main_imports(img):   # the names main imports (its dynamic symbols)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools')); import nso_syms
+    return {s for s, defined, _ in nso_syms.dynsyms(img) if not defined}
+
+def ue_shaders(d, label):
+    """An Unreal Engine shader code archive with every shader decoded (Octopath Traveler 0: the two .ushaderbytecode files of its pak, whose shaders are Oodle-compressed; the NSP script decodes them
+    on the Mac with the game's own Oodle, uepak.py): each shader is an LSLG record holding one stage's code area and control section (uepak.lslg); the stage is the record's tag (SV vertex,
+    SP pixel, SC compute), checked against the archive entry's frequency. The engine combines vertex and pixel shaders per draw, so they are paired as single-stage programs (separable_pairs)"""
+    a, out = uepak.archive(d), []
+    for i, (off, size, raw, fr) in enumerate(a['shaders']):
+        if size != raw: red(f'{label}: shader {i} is still compressed (an archive the NSP script has not decoded)')
+        rec = uepak.lslg(d[a['code'] + off:a['code'] + off + size])
+        if not rec: red(f'{label}: shader {i} is not an LSLG record')
+        tag, ctl, code = rec; st = UE_TAG.get(tag)
+        if not st or uepak.FREQ.get(fr) != st: red(f'{label}: shader {i} has tag {tag} but frequency {fr}')
+        why = check(label, st, ctl, code)
+        if why: red(f'{label}: shader {i} ({st}): {why}')
+        out.append((f'{label}#UE{i}', st, ctl, code))
+    return out
 
 def var_pairs(found):
     """(vertex key, pixel key) within the same BNSH variation"""
@@ -437,6 +569,9 @@ def scan_file(args):
     found = []; trees = {}
     if head[:8] == IDRK:
         idrk_shaders(path, '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)
+        trinity_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == KPKA:   # entries of an RE Engine PAK (kpka_jobs)
         kpka_shaders(path, rel, args[2], found)
@@ -461,7 +596,7 @@ def uniq_keys(found):
     uniq = {}
     for where, st, ctl, code in found:
         key = skey(ctl, code)
-        if key in uniq and (uniq[key][2] != ctl or uniq[key][3] != code): red(f'key {key} is the same but the control section or code area differs ({where})')
+        if key in uniq and not same_shader(uniq[key][2:4], (ctl, code)): red(f'key {key} is the same but the control section or code area differs ({where})')
         uniq.setdefault(key, (where, st, ctl, code))
     return uniq
 
@@ -492,12 +627,19 @@ def main():
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # not a Unity game
         found = []; scan_blob(img, 'main' + ('@' + tag if tag else ''), found)
-        if GLSLC: found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''))
-        if CAPTURE:   # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE
-            cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
-            names = sorted(f for f in os.listdir(cap) if f.endswith('.glslc')) if os.path.isdir(cap) else []
-            if not names: print(f'[RED] the profile has shader_glslc_capture on, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
-            for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
+        found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''), need=False)
+        # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE. A game needs them when main holds GLSL sources and
+        # imports glslcCompile (Fire Emblem: Three Houses; profile_guess.py shader_sources)
+        cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
+        names = sorted(f for f in os.listdir(cap) if f.endswith('.glslc')) if os.path.isdir(cap) else []
+        if not names and img.count(b'#version ') and 'glslcCompile' in main_imports(img):
+            print(f'[RED] main holds GLSL sources and imports glslcCompile, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
+        for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
+        # Unreal Engine shader code archives decoded on the Mac (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS; needed when the RomFS has Unreal paks
+        ued = os.environ.get('DM_UE_SHADERS') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_shaders')
+        names = sorted(f for f in os.listdir(ued) if f.endswith('.ushaderbytecode')) if os.path.isdir(ued) else []
+        if not names and uepak.unreal_paks(romfs): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
+        for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
         results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
@@ -505,8 +647,9 @@ def main():
     J = int(os.environ.get('J', '8'))
     big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
     pak_jobs, paks = kpka_jobs(files)   # Monster Hunter Rise's PAKs: the newest copy of each path, in ranges of entries
-    big += pak_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks]
+    tr_jobs, trp = trpfs_jobs(files)   # Pokémon Legends: Z-A's Trinity packs (data.trpfs and its index data.trpfd), decoded by the game's own Oodle in the Mac host
+    big += pak_jobs + tr_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results += list(ex.map(scan_file, big)) + list(ex.map(scan_file, files, chunksize=16))
     trees, defer = {}, []
@@ -524,12 +667,11 @@ def main():
         pairs |= pr
         for key, v in uniq.items():
             if key in keys:
-                if keys[key][2] != v[2] or keys[key][3] != v[3]: red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
+                if not same_shader(keys[key][2:4], v[2:4]): red(f'key {key} is the same but the control section or code area differs ({v[0]} / {keys[key][0]})')
                 continue
             keys[key] = v; per_src[group(v[0])] += 1
-    if SEPARABLE:
-        sp, cover = separable_pairs(keys); pairs |= sp
-        print(f'single-stage programs: every vertex shader is paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
+    sp, cover = separable_pairs(keys); pairs |= sp
+    if cover: print(f'single-stage programs: {len({v for v, _ in sp}):,} vertex shaders are paired with a cover of {len(cover)} pixel shader(s) ({" ".join(cover)})')
     os.makedirs(pkg, exist_ok=True)
     for f in os.listdir(pkg):
         if f.endswith('.bin'): os.unlink(os.path.join(pkg, f))
@@ -549,7 +691,8 @@ def main():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] for r in rows)),
-                                            ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows))) if hit)
+                                            ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
+                                            ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears; this game has no PC version to pair with\n')
         f.write('package\tindex\tstage\tdm_ctl_sha16\tsource\n')
