@@ -16,25 +16,58 @@ void crash_set_trap_hook(int (*fn)(ucontext_t *uc));
 // The trampoline borrows x16: place probes only at function entries or at points where x16 is dead; the original instruction must not be PC-relative (adr/adrp/b/bl/ldr literal/cbz...).
 #define MAX_PROBE 16
 typedef void (*probe_fn)(ucontext_t *uc);
-static struct { uint64_t at; uint32_t *slot; unsigned hits; char name[40]; long dump; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];
+static struct { uint64_t at; uint32_t *slot; unsigned hits; char name[40]; long dump, dpost; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];   // dpost: @*xN+off+dpost
 
-// !xN: treat xN as a sead::ExpHeap and print its free and used blocks (SMBW layout: free list +0xb0, node offset +0xc4; used list +0xc8, node offset +0xdc; block size at block +0x18)
+// !xN: treat xN as a sead::ExpHeap and print its free and used blocks (block size at block +0x18, alignment pad at +0x12). Settings (docs/agents/05-debugging.md):
+// DM_PROBE_HEAP=<name>,<start>,<size>,<free list>,<used list> layout by sead version (hex; node offset at list +0x14), default SMBW 0,28,30,b0,c8 (no name), BotW 28,38,40,e0,f8;
+// DM_PROBE_HEAPNAME=<text> only heaps whose name contains it; DM_PROBE_HEAPWORDS=1 each used block's first two words; DM_PROBE_HEAPFRAME=<vtable offset in main> heaps of that class
+// are frame heaps (head +0xe0, tail +0xe8); DM_PROBE_HEAPRAW=1 the heap object's first 0x130 bytes
+static struct { int init, words, raw; long lay[5], frame_vt; const char *want; } g_hw = { .lay = { 0, 0x28, 0x30, 0xb0, 0xc8 } };
+static void probe_heapcfg(void) {
+    if (g_hw.init) return; g_hw.init = 1;
+    const char *e = getenv("DM_PROBE_HEAP"); if (e) sscanf(e, "%lx,%lx,%lx,%lx,%lx", &g_hw.lay[0], &g_hw.lay[1], &g_hw.lay[2], &g_hw.lay[3], &g_hw.lay[4]);
+    e = getenv("DM_PROBE_HEAPFRAME"); g_hw.frame_vt = e ? strtol(e, 0, 16) : -1;
+    g_hw.want = getenv("DM_PROBE_HEAPNAME"); g_hw.words = getenv("DM_PROBE_HEAPWORDS") != NULL; g_hw.raw = getenv("DM_PROBE_HEAPRAW") != NULL;
+}
 static int rd64(uint64_t a, uint64_t *v) { vm_size_t g = 0; return !vm_read_overwrite(mach_task_self(), a, 8, (vm_address_t)v, &g) && g == 8; }
+static void probe_word(uint64_t v) {   // A word as module+offset when it points into a module (a vtable names the object)
+    module_t *m = v > 0x10000 ? module_of((void *)v) : NULL;
+    if (m) fprintf(stderr, "%s+%llx", m->name, (unsigned long long)(v - (uint64_t)m->base)); else fprintf(stderr, "%llx", (unsigned long long)v);
+}
+static void probe_heapname(uint64_t h, char *nm, size_t n) {   // sead heaps are named (resource heaps after their file)
+    uint64_t np = 0; nm[0] = 0;
+    if (g_hw.lay[0] && rd64(h + g_hw.lay[0], &np) && np) { vm_size_t g = 0; vm_read_overwrite(mach_task_self(), np, n - 1, (vm_address_t)nm, &g); nm[g < n ? g : n - 1] = 0; for (int k = 0; nm[k]; k++) if (nm[k] < 0x20 || nm[k] > 0x7e) { nm[k] = 0; break; } }
+}
 static void probe_heapwalk(uint64_t h) {
-    uint64_t start = 0, size = 0; rd64(h + 0x28, &start); rd64(h + 0x30, &size);
-    fprintf(stderr, "[dm]   ExpHeap %#llx start %#llx size %#llx\n", (unsigned long long)h, (unsigned long long)start, (unsigned long long)size);
-    static const struct { int list, off; const char *nm; } L[2] = { { 0xb0, 0xc4, "free" }, { 0xc8, 0xdc, "used" } };
+    char nm[128]; probe_heapname(h, nm, sizeof nm);
+    uint64_t start = 0, size = 0, vt = 0; rd64(h + g_hw.lay[1], &start); rd64(h + g_hw.lay[2], &size); rd64(h, &vt);
+    module_t *vm = vt ? module_of((void *)vt) : NULL;
+    if (g_hw.frame_vt > 0 && vm && !strcmp(vm->name, "main") && vt - (uint64_t)vm->base == (uint64_t)g_hw.frame_vt) {
+        uint64_t hd = 0, tl = 0; rd64(h + 0xe0, &hd); rd64(h + 0xe8, &tl);
+        fprintf(stderr, "[dm]   FrameHeap %#llx \"%s\" size %#llx head +%#llx tail +%#llx free %#llx\n", (unsigned long long)h, nm, (unsigned long long)size, (unsigned long long)(hd - start), (unsigned long long)(tl - start), (unsigned long long)(tl - hd));
+        return;
+    }
+    fprintf(stderr, "[dm]   ExpHeap %#llx \"%s\" start %#llx size %#llx\n", (unsigned long long)h, nm, (unsigned long long)start, (unsigned long long)size);
+    if (g_hw.raw) { fprintf(stderr, "[dm]   heap words:"); for (int k = 0; k < 0x130; k += 8) { uint64_t v = 0; rd64(h + k, &v); fprintf(stderr, "%s+%x=", k % 64 ? " " : "\n[dm]     ", k); probe_word(v); } fputc('\n', stderr); }
+    static const char *L[2] = { "free", "used" };
     for (int k = 0; k < 2; k++) {
-        uint64_t offw = 0, node = 0, sum = 0; int n = 0; rd64(h + L[k].off, &offw); int32_t off = (int32_t)offw;
-        rd64(h + L[k].list + 8, &node);
-        fprintf(stderr, "[dm]   %s:", L[k].nm);
-        while (node && node != h + L[k].list && n < 2000) {
+        uint64_t list = h + g_hw.lay[3 + k], offw = 0, node = 0, sum = 0, pads = 0; int n = 0; rd64(list + 0x14, &offw); int32_t off = (int32_t)offw;
+        rd64(list + 8, &node);
+        fprintf(stderr, "[dm]   %s:", L[k]);
+        while (node && node != list && n < 4000) {
             uint64_t blk = node - off, bsz = 0, w2 = 0; rd64(blk + 0x18, &bsz); rd64(blk + 0x10, &w2);
-            fprintf(stderr, "%s%llx+%llx", n % 8 ? " " : "\n[dm]     ", (unsigned long long)(blk - start), (unsigned long long)bsz);
-            sum += bsz; n++;
+            unsigned pad = (unsigned)(w2 >> 16) & 0xffff;
+            if (g_hw.words && k) {
+                uint64_t a = 0, b = 0; rd64(blk + 0x20, &a); rd64(blk + 0x28, &b);
+                fprintf(stderr, "\n[dm]     %llx+%llx pad %x: ", (unsigned long long)(blk - start), (unsigned long long)bsz, pad); probe_word(a); fputc(' ', stderr); probe_word(b);
+            } else {
+                fprintf(stderr, "%s%llx+%llx", n % 8 ? " " : "\n[dm]     ", (unsigned long long)(blk - start), (unsigned long long)bsz);
+                if (pad) fprintf(stderr, "p%x", pad);
+            }
+            sum += bsz; pads += pad; n++;
             if (!rd64(node + 8, &node)) break;
         }
-        fprintf(stderr, "\n[dm]   %s %d blocks %#llx bytes\n", L[k].nm, n, (unsigned long long)sum);
+        fprintf(stderr, "\n[dm]   %s %d blocks %#llx bytes, alignment pads %#llx\n", L[k], n, (unsigned long long)sum, (unsigned long long)pads);
     }
 }   // dump: on hit print 16 bytes at [x0+dump] (-1 = do not print); fn: dedicated handler (replaces the default print)
 static int g_nprobe;
@@ -75,6 +108,11 @@ static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the
             if (g_probe[i].foff >= 0 && vm_read_overwrite(mach_task_self(), v + g_probe[i].foff, 8, (vm_address_t)&v, &g)) v = ~g_probe[i].fval;
             if (v != g_probe[i].fval) { uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1; }
         }
+        if (g_probe[i].hreg >= 0 && g_hw.want) {   // !xN with DM_PROBE_HEAPNAME: report only hits on heaps of that name
+            char nm[128]; probe_heapname(uc->uc_mcontext->__ss.__x[g_probe[i].hreg], nm, sizeof nm);
+            if (!strstr(nm, g_hw.want)) { uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1; }
+        }
+        flockfile(stderr);   // One block per hit when threads hit at once
         { extern uint64_t g_t0_ns; uint64_t now_ns(void); uint32_t thr_cur_handle(void); fprintf(stderr, "[dm] PROBE %s #%u [%.4fs] T=%x", g_probe[i].name, ++g_probe[i].hits, (now_ns() - g_t0_ns) / 1e9, thr_cur_handle()); }
         for (int r = 0; r < 8; r++) { uint64_t v = uc->uc_mcontext->__ss.__x[r]; fprintf(stderr, " x%d=%#llx", r, v); probe_str(v); }
         for (int r = 19; r < 24; r++) fprintf(stderr, " x%d=%#llx", r, uc->uc_mcontext->__ss.__x[r]);
@@ -86,9 +124,11 @@ static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the
             uint8_t b[16]; vm_size_t got = 0;
             int dr = (g_probe[i].dump >> 25) & 31;                                    // @xN+offset: based on xN
             uint64_t at = uc->uc_mcontext->__ss.__x[dr] + (g_probe[i].dump & 0xffffff);
-            if (g_probe[i].dump & 0x1000000) { uint64_t p = 0; vm_size_t g = 0; if (!vm_read_overwrite(mach_task_self(), at, 8, (vm_address_t)&p, &g)) at = p; else at = 0; }   // @*offset: dereference first, then dump
+            if (g_probe[i].dump & 0x1000000) { uint64_t p = 0; vm_size_t g = 0; if (!vm_read_overwrite(mach_task_self(), at, 8, (vm_address_t)&p, &g) && p) at = p + g_probe[i].dpost; else at = 0; }   // @*offset[+post]: dereference first, then dump (post bytes further on)
             if (at && !vm_read_overwrite(mach_task_self(), at, 16, (vm_address_t)b, &got) && got == 16) {
-                fprintf(stderr, " [%sx%d+%#lx]=", (g_probe[i].dump & 0x1000000) ? "*" : "", dr, g_probe[i].dump & 0xffffff); for (int k = 0; k < 16; k++) fprintf(stderr, "%02x", b[k]); }
+                fprintf(stderr, " [%sx%d+%#lx]", (g_probe[i].dump & 0x1000000) ? "*" : "", dr, g_probe[i].dump & 0xffffff);
+                if (g_probe[i].dpost) fprintf(stderr, "+%#lx", g_probe[i].dpost);
+                fputc('=', stderr); for (int k = 0; k < 16; k++) fprintf(stderr, "%02x", b[k]); }
         }
         fputc('\n', stderr);
         { static long xd = -2; if (xd == -2) { const char *e = getenv("DM_PROBE_X2"); xd = e ? strtol(e, 0, 16) : -1; }   // DM_PROBE_X2=bytes: also print the memory x2 points to (to read object fields)
@@ -96,6 +136,7 @@ static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the
             if (!vm_read_overwrite(mach_task_self(), at, n, (vm_address_t)b, &got)) { fprintf(stderr, "[dm]   [x2]:"); for (long k = 0; k < (long)got; k += 8) { uint64_t v; memcpy(&v, b + k, 8); fprintf(stderr, "%s%llx", k % 32 ? " " : "\n[dm]   ", (unsigned long long)v); } fputc('\n', stderr); } } }
         if (g_probe[i].hreg >= 0) probe_heapwalk(uc->uc_mcontext->__ss.__x[g_probe[i].hreg]);
         dm_backtrace(uc->uc_mcontext->__ss.__fp);
+        funlockfile(stderr);
         uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot;
         return 1;
     }
@@ -136,16 +177,18 @@ void probe_install(void) {
             for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, t)) m = &g_mod[i];
             if (!m) die("DM_PROBE: no such module %s", t);
             char *at_ = strchr(c + 1, '@');
-            long dump = -1;
-            if (at_) {   // @offset / @*offset / @xN+offset / @*xN+offset
-                const char *q = at_ + 1; long deref = 0, reg = 0;
+            long dump = -1, post = 0;
+            if (at_) {   // @offset / @*offset / @xN+offset / @*xN+offset / @*xN+offset+post (the dereferenced pointer plus post: @*x0+48+8 = an al::LiveActor's position, al::getTrans)
+                const char *q = at_ + 1; long deref = 0, reg = 0; char *e3;
                 if (*q == '*') { deref = 0x1000000; q++; }
                 if (*q == 'x') { char *e2; reg = strtol(q + 1, &e2, 10) & 31; q = *e2 == '+' ? e2 + 1 : e2; }
-                dump = deref | (reg << 25) | (strtol(q, 0, 16) & 0xffffff);
+                dump = deref | (reg << 25) | (strtol(q, &e3, 16) & 0xffffff);
+                if (deref && *e3 == '+') post = strtol(e3 + 1, 0, 16);
             }
             char *qm = strchr(c + 1, '?'), *bang = strchr(c + 1, '!');
             probe_add(m, strtoull(c + 1, 0, 16), dump, NULL);
-            if (bang && bang[1] == 'x') g_probe[g_nprobe - 1].hreg = (int)strtol(bang + 2, 0, 10) & 31;
+            g_probe[g_nprobe - 1].dpost = post;
+            if (bang && bang[1] == 'x') { g_probe[g_nprobe - 1].hreg = (int)strtol(bang + 2, 0, 10) & 31; probe_heapcfg(); }
             if (qm) {   // Filter: ?x0=706c400000 or ?[x0+38]=781548 (hex)
                 const char *q = qm + 1; int br = *q == '[';
                 if (br) q++;

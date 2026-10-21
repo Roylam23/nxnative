@@ -107,11 +107,41 @@ CUTS = {
     (0x139468, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x1394fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # Brain Memory Training Academy 1.0.0 (v0) sdk (SDK 16.2.4, the same build as Unicorn Overlord 1.05's, which has no virtual address memory and never allocates an address region):
+  # the same node area cut. nninitStartup (main+0x73ad60) calls StandardAllocator::Initialize(nullptr, pool − used) with virtual address memory, which aborted at its CentralHeap::Init.
+  # The constructor is at sdk+0x134768 (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x13480c)
+  '12f161039300861f1054371f0e36b8c9': [
+    (0x134778, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x13480c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) sdk (SDK 19.3.11): the same node area cut. The constructor is at sdk+0x1423ec (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte
   # nodes, the area then registered as occupied at +0x142468). With main's allocator region below, the guest block fits the 5 GB proven on a phone
   'df7a3960c74c3a4803f826c587153252': [
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # Super Mario Galaxy 1.3.1 / Super Mario Galaxy 2 1.4.0 sdk (SDK 18.3.5, the same build in both): the same node area cut. Galaxy 2's movie player initializes its StandardAllocator with
+  # virtual address memory (main+0x62c280: Initialize(nullptr, 384 MB)), which aborted at its CentralHeap::Init: a 256 MB alias region holds no region after a 1 GB node area.
+  # The constructor is at sdk+0x13be3c (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x13bee0)
+  '6075151627016eef437c1312f2e3ed56': [
+    (0x13be4c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x13bee0, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # Absolum 1.1.1 (v393216) sdk (SDK 18.3.2; the AddressRegionManager at the offsets of Galaxy's SDK 18.3.5 build): the same node area cut, and regions of 1 GB and more aligned to 32 MB
+  # instead of 1 GB. VammManager::AllocateAddressRegion (sdk+0x13bfd0) aligns a region by its size: 64 KB under 2 MB, 2 MB under 4 MB, 4 MB under 32 MB, 32 MB under 1 GB, else 1 GB
+  # (+0x13c03c), and places it first-fit after the regions already there. Absolum's two large regions (main's malloc, and the .NET GC's region range from the game_env) are both over 1 GB, with a 4 KB
+  # region between them, so the alignment lost up to 1 GB before each one (measured with a 64 GB alias region: 0.6 GB before malloc's at that run's alias base, 1 GB before the GC's), which
+  # the 64 GB alias region of a Switch never misses and an iPhone's 4.375 GB cannot spare. 32 MB alignment is what the SDK gives regions from 32 MB up; nothing in the SDK or the game reads the region's alignment
+  'f118ae1c2e7728471aaf1a0d58484968': [
+    (0x13be4c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x13bee0, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x13c03c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
+  # Absolum 1.1.1 (v393216) main: nninitStartup (main+0x1b54d0) initializes malloc's StandardAllocator with virtual address memory over 40 GB of address space (main+0x28bff4, then
+  # main+0x7562d0). Its largest block is FNA3D's GPU heap, 1.75 GB allocated at FNA3D_CreateDevice (main+0xc03660 → main+0x563370); measured into the first level, the allocator's blocks reach
+  # 332 MB from the region's start and 1.82 GB from its end, 2.19 GB in all and no more after the title. 2.5 GB holds that with 300 MB to spare
+  '916f5b8d61baa16d0939404ea047e129': [
+    (0x28bff4, '4001c0d2', '0000b4d2', 'malloc region size: mov x0,#0xa00000000 → mov x0,#0xa0000000 (40 GB → 2.5 GB of address space)'),
   ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) main: nninitStartup (main+0x1b2e650) initializes its StandardAllocator with virtual address memory over 12 GB of address space (main+0x1b3e3e4), which
   # the Switch's 64 GB alias region holds and an iPhone's single 6 GB reservation cannot. The allocator commits pages as it goes and the pool (3.2 GB) bounds what it maps (profile mem_map_limit);
@@ -185,6 +215,17 @@ CUTS = {
   '7bba185a35ee9b4d0af66a4df910a823': [
     (0x1423fc, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x142468, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
+  # FINAL FANTASY TACTICS - The Ivalice Chronicles 1.4.0 (v393216) main: the job system wakes one worker of a pool through the pool's single auto-clear event. A job goes into worker k's
+  # own queue (main+0x154c0), and if k's state reads asleep the caller signals the event (main+0x12554, from the per-worker dispatch loops main+0x14000 / main+0x14350 / main+0x17670,
+  # the single-job submits main+0x14640 / main+0x14790 / main+0x14dc0 and the shutdown main+0x13df0). The kernel wakes the waiter that slept first, which is k only while the workers sleep in index order; the woken worker runs only its own queue
+  # (worker loop main+0x15ce0) and sleeps again, so with two workers in one pool (threads 0x1006 / 0x1007, later pinned to core 2) the signal went to the wrong one: the main thread waited
+  # forever on a dispatch at boot in 4 of 6 Mac runs, and in a run that got through, a job sat in worker 0's queue for 12 s. The wait wrapper (main+0x12500, {event, pending}) already
+  # signals the event once more when it takes a nonzero pending word after waking, and nothing in main sets it: the signal now sets it first, so a worker woken in another's place
+  # passes the wake on (in a one-worker pool the extra signal costs one empty loop)
+  '3cfd457814dd647f4cd0f0ae9f9454d2': [
+    (0x12554, '000040f9', '000400f9', 'job pool wake: ldr x0,[x0] → str x0,[x0,#8] (pending = nonzero: the woken worker signals once more)'),
+    (0x12558, '36fc1814', 'fdffff17', 'job pool wake: b SignalEvent → b 0x1254c (ldr x0,[x0]; b SignalEvent)'),
   ],
 }
 # ---- Registered observation gates: {NSO build ID: [(offset, number, original instruction word, reason)]}. Numbers match OBS_* in the host's hle.h;
@@ -574,8 +615,12 @@ for _ in range(nfde):
 starts = sorted(x for x in starts if x < TEXT_END)
 
 # ---- Linear scan to find all rewrite points (not relying on register read/write reports) ----
+# Data blocks in the text (nso_code.py: Absolum's main starts with 1.7 MB of them) are not code: words there that read as rewrite sites are left alone
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nso_code
+DATA_BLOCKS = nso_code.data_blocks(IMG, TEXT_END, md)
 kinds = {}
-for o in range(0, TEXT_END, 4):
+for o in (o for s, e in zip([0] + [e for _, e in DATA_BLOCKS], [s for s, _ in DATA_BLOCKS] + [TEXT_END]) for o in range(s, e, 4)):
     w = struct.unpack_from('<I', IMG, o)[0]
     if w & 0xFFE0001F == 0xD4000001: kinds[o] = ('svc', (w >> 5) & 0xFFFF); continue
     if w & 0xFFFFFFE0 == 0xD53BD040: kinds[o] = ('tpidr_r', None); continue
@@ -1134,7 +1179,7 @@ else:
     open(P('patched.bin'), 'wb').write(IMG + bytearray(PATCH_OFF - len(IMG)) + patch)
 import hashlib
 with open(os.path.join(outdir, 'build_src.sha256'), 'w') as f:
-    f.write(hashlib.sha256(open(os.path.abspath(__file__), 'rb').read()).hexdigest() + '  patch_nso.py\n')
+    for src_ in (os.path.abspath(__file__), nso_code.__file__): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.basename(src_)}\n')
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
     if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file
@@ -1156,3 +1201,4 @@ with open(P('obs.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, oid, ow, why in obs: f.write(f'{off:#x}\t{oid}\t{ow}\t{why}\n')
 print(NAME, stats, 'cuts', len(cuts), 'obs', len(obs), 'patch', len(patch), 'PATCH_OFF', hex(PATCH_OFF), 'slot_refs', len(fix), 'gates', len(gates))
+if DATA_BLOCKS: print(NAME, 'data blocks left alone:', ', '.join(f'{s:#x}..{e:#x}' for s, e in DATA_BLOCKS))

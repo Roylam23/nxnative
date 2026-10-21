@@ -37,10 +37,17 @@ game_profile: $(GAME_H)
 # Regenerated on every make (FORCE): the same GAME can come from another profile folder (DM_GAMES_FIRST), whose game.tsv may be older than the header; game.py writes it only when it changes
 $(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py FORCE
 	@python3 ../games/game.py header $(GAME) $@
-# Records which game the host was built for: changing GAME changes the stamp's content and rebuilds the host (otherwise make sees dmhost as newer than both headers and keeps the other game's host)
+# Records which game the host was built for: changing GAME changes the stamp's content and rebuilds the host (otherwise make sees dmhost as newer than both headers and keeps the other game's host).
+# The game of the last build is also read when the Makefile is parsed, and a different one forces the link: make compares whole seconds, and a stamp written in the same second as
+# another game's dmhost (two builds in a row) did not count as newer, so that game's host was kept
 GAME_STAMP = gen/game.stamp
 $(GAME_STAMP): FORCE
 	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || echo $(GAME) > $@
+ifneq ($(strip $(GAME)),)
+ifneq ($(shell cat $(GAME_STAMP) 2>/dev/null),$(GAME))
+dmhost: FORCE
+endif
+endif
 .PHONY: FORCE
 FORCE:
 dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h $(GFX_H) $(GAME_H) dm_touch_layout.h $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
