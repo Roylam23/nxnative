@@ -83,9 +83,9 @@ python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [
 python3 scripts/build_ipa.py "$HOME/Games/MarioWonder/Super Mario Bros. Wonder [010015100B514000][v0].nsp" -k ~/keys/prod.keys
 ```
 
-The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the game files' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
+The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the game files' size plus 10 GB. The default IPA is a **split IPA**: the shader libraries and app are inside, but the game files are not; step 4 puts the extracted `RomFS` folder in the app's Documents once, so later app updates are small. `SPLIT_IPA=0 python3 scripts/build_ipa.py ...` builds the all-in-one IPA with the game files inside (large; for a fresh install without a separate RomFS copy). Options such as `-o` (output path) and `--app-name` are listed by `-h`.
 
-**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update).
+**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update). For the default split IPA, copy the extracted `RomFS` folder into the app's Documents in the Files app and name it **`romfs`** (so `Documents/romfs/graph/...`, not `Documents/romfs/RomFS/...`); the app shows a "Game files not found" hint until it is there. It stays across app updates. An all-in-one IPA (`SPLIT_IPA=0`) already has the files and needs no copy.
 
 ## Play
 
@@ -95,7 +95,7 @@ A connected game controller hides the touch controls and keeps every button.
 - **Game language** is English by default. The packing script bakes `DM_LANG=en-US` unless its `--env-file` sets `DM_LANG`; on the device, `Documents/env.txt` still overrides it. For Chinese, add `DM_LANG=zh-Hans` (Simplified) or `DM_LANG=zh-Hant` (Traditional) to `Documents/env.txt`.
 - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, send `log.txt` (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
-- **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
+- **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress; for a split IPA, copy `romfs/` as well (it is the game files you put there).
 - **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`. `DM_FPS_TARGET=30` keeps Breath of the Wild and Tears of the Kingdom at their original 30 fps, which saves battery.
 
 ## Known issues

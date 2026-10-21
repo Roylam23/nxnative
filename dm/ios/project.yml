@@ -1,4 +1,4 @@
-# iOS project (xcodegen); the app name, bundle ID and category come from the game profile (dm/games/<id>/game.tsv, passed by build_ipa.sh through environment variables). tools/build_ipa.sh generates Gen/ first (host source links, the embedded rewritten modules, host tables), then packs the app with the iOS shader libraries (DmIOS.app/msl) and the RomFS (tools/pack_ipa.py).
+# iOS project (xcodegen); the app name, bundle ID and category come from the game profile (dm/games/<id>/game.tsv, passed by build_ipa.sh through environment variables). tools/build_ipa.sh generates Gen/ first (host source links, the embedded rewritten modules, host tables), then packs the app with the iOS shader libraries (DmIOS.app/msl); the default split IPA leaves the RomFS to Documents/romfs, and SPLIT_IPA=0 packs it into the app (tools/pack_ipa.py).
 name: DmIOS
 options:
   bundleIdPrefix: ${DM_BUNDLE_ID}

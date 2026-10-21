@@ -9,7 +9,8 @@ program_id	0100D9F01D474000
 name	Rhythm Heaven Groove
 ipa	RhythmHeavenGroove.ipa
 app_category	public.app-category.games
-pad_layout	simple
+pad_layout	rhythm
+op_mode	handheld
 
 # ---- Versions ----
 build	v0	1.0.0	main=03ff4a3bec96bde3a2e37ce3aa4caa0c	sdk=cff2680fe74cb7d8d13b525730d1a7fd

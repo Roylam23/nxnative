@@ -328,7 +328,7 @@ void mtl_init(void) {
     g_bloomq_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
     if (!g_bloomq_args) MDIE("failed to create the bloom 1/4 argument table: %s", ate.localizedDescription.UTF8String);
     for (int i = 0; i < 3; i++) {
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 16 options:MTLResourceStorageModeShared];
         if (!g_present_uv[i]) MDIE("failed to create present UV buffer[%d]", i);
         res_add(g_present_uv[i]);
         g_bloomq_const[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
@@ -7250,8 +7250,36 @@ static void present_pipeline(MTLPixelFormat format) {
             "#include <metal_stdlib>\nusing namespace metal;\n"
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
-            "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "struct Present { float4 src; float4 edge; float4 game; float4 param; };\n"
+            "static inline float3 sample_at(texture2d<float> t, sampler s, constant Present& c, float2 g) { return t.sample(s, clamp(g * c.src.zw + c.src.xy, c.edge.xy, c.edge.zw)).rgb; }\n"
+            "static inline float3 ambient_sample(texture2d<float> t, sampler s, constant Present& c, float2 g) {\n"
+            "    float2 m = g;\n"
+            "    if (m.x < 0.0) m.x = -m.x; else if (m.x > 1.0) m.x = 2.0 - m.x;\n"
+            "    if (m.y < 0.0) m.y = -m.y; else if (m.y > 1.0) m.y = 2.0 - m.y;\n"
+            "    return sample_at(t, s, c, clamp(m, 0.0, 1.0));\n"
+            "}\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Present& c [[buffer(0)]]) {\n"
+            "    float2 g = (in.uv - c.game.xy) / c.game.zw;\n"
+            "    if (g.x >= 0.0 && g.x <= 1.0 && g.y >= 0.0 && g.y <= 1.0) return float4(sample_at(t, s, c, g), 1.0);\n"
+            "    float strength = c.param.x;\n"
+            "    if (strength <= 0.0) return float4(0.0, 0.0, 0.0, 1.0);\n"
+            "    float3 col = float3(0.0); float wsum = 0.0;\n"
+            "    for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {\n"
+            "        float2 o = float2(float(i), float(j)) * 0.16;\n"
+            "        float w = (i == 0 && j == 0) ? 0.5 : 1.0;\n"
+            "        col += ambient_sample(t, s, c, g + o) * w; wsum += w;\n"
+            "    }\n"
+            "    col /= wsum;\n"
+            "    float3 avg = (sample_at(t, s, c, float2(0.25, 0.25)) + sample_at(t, s, c, float2(0.75, 0.25)) + sample_at(t, s, c, float2(0.25, 0.75)) + sample_at(t, s, c, float2(0.75, 0.75))) * 0.25;\n"
+            "    col = mix(col, avg, 0.45);\n"
+            "    float lum = dot(col, float3(0.299, 0.587, 0.114));\n"
+            "    col = mix(float3(lum), col, 1.22) * 0.92;\n"
+            "    float2 d = max(max(c.game.xy - in.uv, in.uv - (c.game.xy + c.game.zw)), 0.0);\n"
+            "    float fall = smoothstep(0.0, 0.18, length(d));\n"
+            "    float vertical = smoothstep(0.0, 0.10, min(in.uv.y, 1.0 - in.uv.y));\n"
+            "    col *= mix(1.10, 0.40, fall) * mix(0.72, 1.0, vertical) * strength;\n"
+            "    return float4(clamp(col, 0.0, 1.0), 1.0);\n"
+            "}\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("present shader compile failed %s", e.localizedDescription.UTF8String);
@@ -7281,6 +7309,28 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
     if (!v) { RED_ONCE(69, "present: cannot create a non-sRGB view of the sRGB swapchain texture (format %lu); presenting the decoded values", (unsigned long)src.pixelFormat); return src; }
     return v;
 }
+static float present_ambient_strength(void) {   // DM_AMBIENT=0 = black bars; DM_AMBIENT_STRENGTH=0..1.5 tunes the glow; DM_EDGE_EXTEND=0 stays as the old alias
+    static int done; static float s = DM_GAME_PAD_RHYTHM ? 1.0f : 0.0f;   // the rhythm pad's game gets it by default; other profiles opt in with DM_AMBIENT=1
+    if (!done) {
+        done = 1;
+        const char *e = getenv("DM_AMBIENT"), *v = getenv("DM_AMBIENT_STRENGTH"), *old = getenv("DM_EDGE_EXTEND");
+        if (e && !strcmp(e, "0")) s = 0;
+        else {
+            if (e && !strcmp(e, "1")) s = 1;
+            if (v && *v) s = (float)atof(v);
+            else if (old && !strcmp(old, "0")) s = 0;
+        }
+        if (s < 0) s = 0; if (s > 1.5f) s = 1.5f;
+        MLOG("present ambient: strength %.2f%s", s, s <= 0 ? " (black bars)" : "");
+    }
+    return s;
+}
+static void present_game_rect(const MTLViewport *vp, double dw, double dh, float out[4]) {
+    out[0] = (float)(vp->originX / dw);
+    out[1] = (float)(1.0 - (vp->originY + vp->height) / dh);   // the shader's uv starts at the top
+    out[2] = (float)(vp->width / dw);
+    out[3] = (float)(vp->height / dh);
+}
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4]) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -7301,18 +7351,20 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
-    int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
         MLOG("present viewport %.0f,%.0f %.0fx%.0f / canvas %.0fx%.0f (game image %lux%lu)", vp.originX, vp.originY, vp.width, vp.height, dw, dh, (unsigned long)src.width, (unsigned long)src.height); }
-    rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
+    rp.colorAttachments[0].texture = dst; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;   // the full-screen shader writes the picture and its ambient bars
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
-    [en setViewport:vp];
+    [en setViewport:(MTLViewport){0, 0, dw, dh, 0, 1}];
     [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:present_raw_src(src) atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    float game[4]; present_game_rect(&vp, dw, dh, game);
+    float uv[16] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height,
+                    game[0], game[1], game[2], game[3],
+                    present_ambient_strength(), 0, 0, 0};
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -7332,10 +7384,9 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
-    int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;
-    rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     id<MTL4RenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
@@ -7345,11 +7396,14 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     [g_present_args setTexture:present_raw_src(src).gpuResourceID atIndex:0];
     [g_present_args setSamplerState:g_blit_samp.gpuResourceID atIndex:0];
     float *uv = g_present_uv[uv_i].contents;
+    float game[4]; present_game_rect(&vp, dw, dh, game);
     uv[0] = (float)cx / src.width; uv[1] = (float)cy / src.height; uv[2] = (float)cw / src.width; uv[3] = (float)ch / src.height;
     uv[4] = (cx + 0.5f) / src.width; uv[5] = (cy + 0.5f) / src.height; uv[6] = (cx + cw - 0.5f) / src.width; uv[7] = (cy + ch - 0.5f) / src.height;
+    uv[8] = game[0]; uv[9] = game[1]; uv[10] = game[2]; uv[11] = game[3];
+    uv[12] = present_ambient_strength(); uv[13] = uv[14] = uv[15] = 0;
     if (atomic_load_explicit(&g_origin_ll, memory_order_relaxed)) { uv[1] += uv[3]; uv[3] = -uv[3]; }   // lower-left origin: the window image is stored bottom-up
     [g_present_args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:(MTLViewport){0, 0, dw, dh, 0, 1}]; [en setRenderPipelineState:g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     m4_end(en);
     return 1;

@@ -1191,6 +1191,9 @@ def main(args=None):
     say(f'output IPA: {out_ipa}')
     work = nsp_dir / f'{g.id}_build'
     keep = KEEP_EXTRACTED if args.keep_extracted is None else args.keep_extracted
+    split = os.environ.get('SPLIT_IPA', '1') != '0'
+    if split and not keep:
+        say('[RED] split IPA: --no-keep-extracted deletes the extracted RomFS needed for Documents/romfs; copy it before the build ends')
     say(f'work folder (extracted game files in extract/, {"kept for the next build" if keep else "deleted after the IPA is built"}): {work}')
     xlate = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
     # DM_GAME picks the profile; DM_ROOT / WORK point at <id>_build: the tools' default paths and temporary directories all stay inside it
@@ -1284,6 +1287,8 @@ def main(args=None):
     if not keep:
         say(f'deleting the extracted game files: {ex}'); rmtree(ex)
     say(f'done: {out_ipa} ({out_ipa.stat().st_size / 2**30:.1f} GB)')
+    if split:
+        say(f'split IPA: copy the RomFS to the app Documents as "romfs": {game / "RomFS"}')
     if provisional:
         say(f'[RED] this IPA was built from a provisional game profile and the game may not boot: {g.dir}')
         say(f'  bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')
