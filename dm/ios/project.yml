@@ -37,6 +37,7 @@ targets:
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
         LSApplicationCategoryType: ${DM_APP_CATEGORY}   # game profile app_category
+        DMShowFPS: ${DM_SHOW_FPS}           # YES = the frame-rate counter is on (front_ios.m; set by build_ipa.sh)
         LSSupportsGameMode: true
         GCSupportsControllerUserInteraction: true   # Physical controllers (GameController)
         GCSupportedGameControllers:

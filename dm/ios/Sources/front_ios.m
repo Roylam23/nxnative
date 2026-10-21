@@ -17,6 +17,7 @@ int front_ios_boot_ok(void);
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
+static UILabel *front_ios_fps_label(void);
 
 @interface DmGameView : UIView
 @end
@@ -41,6 +42,7 @@ static void front_ios_audio_watch(void);
 @interface DmRootVC : UIViewController
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
+@property (nonatomic, strong) UILabel *fps;
 @end
 @implementation DmRootVC
 - (void)viewDidLoad {
@@ -61,6 +63,8 @@ static void front_ios_audio_watch(void);
     self.pad = dm_gamepad_view(self.view.bounds);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
+    self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
+    if (self.fps) [self.view addSubview:self.fps];
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -68,6 +72,10 @@ static void front_ios_audio_watch(void);
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+    if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
+        CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
+        self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+    }
 }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot(); }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
@@ -90,6 +98,26 @@ static void front_ios_power_watch(void) {
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
         (void)n; LOG("front end: Low Power Mode → %s (%.0f s after launch)", NSProcessInfo.processInfo.lowPowerModeEnabled ? "on" : "off", (now_ns() - g_t0_ns) / 1e9); }];
     LOG("front end: thermal state %d, brightness %.2f, Low Power Mode %s", dm_thermal_now(), g_brightness, NSProcessInfo.processInfo.lowPowerModeEnabled ? "on" : "off");
+}
+
+// Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
+// On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
+uint64_t mtl_present_count(void);
+static UILabel *front_ios_fps_label(void) {
+    const char *e = getenv("DM_SHOW_FPS");
+    if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;
+    UILabel *l = [UILabel new];
+    l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
+    l.text = @"-- fps";
+    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+        (void)t; uint64_t n = mtl_present_count(); double now = CACurrentMediaTime();
+        if (now - t0 < 1.5) l.text = [NSString stringWithFormat:@"%.0f fps", (n - n0) / (now - t0)];   // a longer span is the time in the background: no reading
+        n0 = n; t0 = now;
+    }];
+    LOG("front end: frame-rate counter on");
+    return l;
 }
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
