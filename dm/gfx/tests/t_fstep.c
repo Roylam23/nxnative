@@ -85,6 +85,20 @@ int main(void) {
         run(&m, 2, 0.5, 1, 3, 0);
         check(m.s.k == 1 && m.next == 1 && m.s.late == 0, "  the override ends: hold 1, step 1, no late frame counted");
     }
+    {   // 165 Hz with virtual ticks (nvn_mtl.m link_range): cheap frames show on the refreshes nearest their slots, 12.1 / 18.2 ms at hold 1, 30.3 / 36.4 at 2, 48.5 / 54.5 at 3
+        for (int sl = 1; sl >= 0; sl--) {
+            nvn_fstep s = {.k = 3, .step = 3, .kmin = 1, .hold = FSTEP_HOLD0, .shown_slack = sl ? 60.0 / 165 : 0};
+            for (int i = 0; i < 360; i++) {
+                double ms = s.k == 3 ? (i % 4 ? 48.485 : 54.545) : s.k == 2 ? (i % 2 ? 30.303 : 36.364) : (i % 4 ? 18.182 : 12.121);
+                nvn_fstep_next(&s, ms * 60 / 1000, 0.6, 1, 3, 0);
+            }
+            snprintf(b, sizeof b, sl ? "165 Hz, cheap frames at hold 3, one refresh of slack: trials back to 2 and 1 (k %d, downs %llu)"
+                                     : "  without the slack the 54.5 ms frames count as late: hold 3 (20 fps) for good (k %d, downs %llu)", s.k, (unsigned long long)s.downs);
+            check(sl ? s.k == 1 && s.downs == 2 : s.k == 3 && s.downs == 0, b);
+        }
+        sim m = {0}; m.s.shown_slack = 60.0 / 165; run(&m, 60, 0.5, 1, 3, 0); run(&m, 300, 1.32, 1, 3, 0);
+        check(m.s.k == 2, "  the slack does not hide work: 22 ms frames still step to hold 2");
+    }
     printf("== %d checks, %d failed ==\n", checks, fail);
     return fail != 0;
 }

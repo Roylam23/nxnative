@@ -6,6 +6,10 @@
 #   AOC=add-on content directory (default $W/data/aoc; when it exists it goes to DmIOS.app/aoc/<index>/; an empty string = none), GFXAPI=nvn / vulkan (default: by the shader libraries in MSL_IOS)
 #   The app name is the game name in the base NSP's control data ($W/data/v0/control.nacp, else the one next to the RomFS), the app version is the display version in the packed game's control data (the one next to the RomFS:
 #   nx_extract saves the update's there when an update is packed, else the base game's), the bundle ID is org.nxnative.<base game title ID in lowercase> (DM_DISPLAY_NAME / DM_APP_VERSION / DM_BUNDLE_ID override them);
+#   DM_SHOW_FPS=1 turns the frame-rate counter on (DMShowFPS in Info.plist; DM_SHOW_FPS in the app's Documents/env.txt overrides it on the phone);
+#   A16=1 builds for iPhone A16 and older: software BC sampling, the offline ASTC cache (DM_BC_ASTC, default $W/astc-cache),
+#     a split IPA (SPLIT_IPA defaults to 1), the rhythm profile's three-slot shared-font limit and an "A16" app name / bundle suffix so it can sit beside the normal app;
+#     DM_BC_ASTC=<directory> and SPLIT_IPA=1 are also available on their own (the cache is copied to <App>/dm/bc_astc);
 #   the IPA name, code modules, RomFS marker and shader tables come from the game profile
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -18,28 +22,36 @@ gp() { python3 "$DM/games/game.py" "$GAME" "$1" || die "game profile $GD: $1"; }
 [ -n "${W:-}" ] || die "W is not set: W=<NSP folder>/$GAME-work (the game's work folder) $0"
 PKG=$(gp package)
 PATCHED=${PATCHED:-$W/build/patched_$PKG}; ROMFS=${ROMFS:-$W/data/$PKG/RomFS}; MSL_IOS=${MSL_IOS:-$W/build/ios/dmsh_b}; AOC=${AOC-$W/data/aoc}
-LEGACY=${LEGACY:-0}
-SPLIT_IPA=${SPLIT_IPA:-$LEGACY}
-if [ "$LEGACY" = 1 ]; then
-  DM_BC_ASTC=${DM_BC_ASTC:-$W/astc-cache}
+A16=${A16:-${LEGACY:-0}}   # LEGACY=1: the name older A16 builds used
+SPLIT_IPA=${SPLIT_IPA:-$A16}
+if [ "$A16" = 1 ]; then
+  DM_BC_ASTC=${DM_BC_ASTC-$W/astc-cache}
   if [ -z "${DM_ENV_FILE:-}" ]; then
-    DM_ENV_FILE=$W/legacy_env.txt
-    printf 'DM_LANG=en-US\nDM_NVN_BC7_UPLOAD=1\nDM_NVN_BC_SOFTWARE=1\nDM_LEGACY=1\nDM_OPMODE=0\n' > "$DM_ENV_FILE"
+    DM_ENV_FILE=$W/a16_env.txt
+    # The three-slot cap is a Rhythm Heaven memory saving, not a general A16 default: other games keep all six shared fonts.
+    PAD_LAYOUT=$(python3 "$DM/games/game.py" "$GAME" pad_layout 2>/dev/null || true)
+    if [ "$PAD_LAYOUT" = rhythm ]; then printf 'DM_NVN_BC_SOFTWARE=1\nDM_SHARED_FONT_LIMIT=3\n' > "$DM_ENV_FILE"
+    else printf 'DM_NVN_BC_SOFTWARE=1\n' > "$DM_ENV_FILE"; fi
   fi
 fi
 OUT_IPA=${1:-$(dirname "$W")/$(gp ipa)}
-if [ "$SPLIT_IPA" = 1 ] && [ $# -eq 0 ]; then OUT_IPA=${OUT_IPA%.ipa}-split.ipa; fi
+if [ "$A16" = 1 ] && [ $# -eq 0 ]; then OUT_IPA=${OUT_IPA%.ipa}-a16.ipa; fi
 O=$W/build/ios/pkg; DD=$O/dd
 MODS=$(gp modules); MARKER=$(gp romfs_marker)
 NACP=$W/data/v0/control.nacp; [ -f "$NACP" ] || NACP=$(dirname "$ROMFS")/control.nacp
 [ -n "${DM_DISPLAY_NAME:-}" ] || DM_DISPLAY_NAME=$(python3 "$DM/tools/nacp.py" "$NACP") || die "no game name in $NACP (re-extract with nx_extract, or set DM_DISPLAY_NAME)"
 VNACP=$(dirname "$ROMFS")/control.nacp; [ -f "$VNACP" ] || VNACP=$W/data/v0/control.nacp
 [ -n "${DM_APP_VERSION:-}" ] || DM_APP_VERSION=$(python3 "$DM/tools/nacp.py" --version "$VNACP") || { t "no display version in $VNACP: the app version is 1.0"; DM_APP_VERSION=1.0; }
-if [ "$LEGACY" = 1 ]; then
-  DM_DISPLAY_NAME="$DM_DISPLAY_NAME Legacy"
-  DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z').legacy}
+if [ "$A16" = 1 ]; then
+  case "$DM_DISPLAY_NAME" in *" A16") ;; *) DM_DISPLAY_NAME="$DM_DISPLAY_NAME A16" ;; esac
+  case "${DM_BUNDLE_ID:-}" in
+    *.a16) ;;
+    "") DM_BUNDLE_ID=org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z').a16 ;;
+    *) DM_BUNDLE_ID="$DM_BUNDLE_ID.a16" ;;
+  esac
 fi
 export LC_ALL=C DM_BUNDLE_ID=${DM_BUNDLE_ID:-org.nxnative.$(echo "$GAME" | tr 'A-Z' 'a-z')} DM_DISPLAY_NAME DM_APP_VERSION DM_APP_CATEGORY=$(gp app_category) DM_TEAM_ID=${DM_TEAM_ID:-0000000000}   # placeholder identity: unsigned, the install tool replaces it
+if [ "${DM_SHOW_FPS:-0}" = 1 ]; then export DM_SHOW_FPS=YES; else export DM_SHOW_FPS=NO; fi
 for f in $MODS; do [ -f "$PATCHED/$f.patched.bin" ] && [ -f "$PATCHED/$f.fixups.tsv" ] || die "no rewritten module $PATCHED/$f (run dm/tools/patch_nso.py first)"; done
 [ -e "$ROMFS/$MARKER" ] || die "no RomFS at $ROMFS (missing $MARKER)"
 V=$(sed -n 's/^#define DMSH_CHAIN "\(.*\)"/\1/p' "$GD/dmsh_chain.h")
@@ -49,7 +61,7 @@ if [ -z "${GFXAPI:-}" ]; then if ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.m
 if [ "$GFXAPI" = vulkan ]; then [ -f "$MSL_IOS/vk/vk_shaders.metallib" ] || die "no iOS Vulkan shader library $MSL_IOS/vk (dm/gfx/tools/vk_shaders.py \"$ROMFS\" <Mac dir> --ios \"$MSL_IOS\")"
 else [ -n "$V" ] && ls "$MSL_IOS/b-$V" 2> /dev/null | grep -q '_b.metallib$' || die "no iOS shader libraries $MSL_IOS/b-$V (IOSOUT=$MSL_IOS dmsh_build.py ...)"; fi
 
-t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)"
+t "app: $DM_DISPLAY_NAME $DM_APP_VERSION ($DM_BUNDLE_ID)$([ $DM_SHOW_FPS = YES ] && echo ', frame-rate counter on')"
 t "generate Gen/ (host sources, embedded modules, tables)"
 rm -rf Gen && mkdir -p Gen/dm || die "mkdir Gen"
 python3 tools/gen_build.py ../host Gen > Gen/dm.xcconfig || die "gen_build"
@@ -65,8 +77,15 @@ if [ "$GFXAPI" = vulkan ]; then MSLDIR=vk; else MSLDIR=b-$V; fi
 # Shared-font stand-ins: standard = macOS's Arial Unicode (absent on iOS), Nintendo extension = button icons generated by make_ext_font.py (needs fontTools; FONT_PY names a python that has it)
 mkdir -p Gen/dm/font && cp "${STD_FONT:-/System/Library/Fonts/Supplemental/Arial Unicode.ttf}" Gen/dm/font/standard.ttf || die "copy standard font (STD_FONT=a TTF)"
 "${FONT_PY:-python3}" "$DM/tools/make_ext_font.py" Gen/dm/font/nintendo_ext.ttf > /dev/null || die "make_ext_font.py (pip install fonttools, or FONT_PY=python with fontTools)"
-# Optional offline BC → ASTC cache (A16 / 6 GB): made by make_astc_cache.py from a DM_NVN_BC_DUMP run
-if [ -n "${DM_BC_ASTC:-}" ]; then mkdir -p Gen/dm/bc_astc; cp -cR "$DM_BC_ASTC"/* Gen/dm/bc_astc/ || die "copy BC ASTC cache"; t "BC ASTC cache: $(ls "$DM_BC_ASTC" | wc -l | tr -d ' ') files"; fi
+# Optional offline BC → ASTC cache (A16 / older GPUs): made by dm/tools/make_astc_cache.py from a DM_NVN_BC_DUMP run.
+# The guest texture hash is the key, so the cache belongs to one game and one set of game files. DM_BC_ASTC= (empty) disables it.
+if [ -n "${DM_BC_ASTC:-}" ]; then
+  if [ -d "$DM_BC_ASTC" ]; then
+    mkdir -p Gen/dm/bc_astc && cp -cR "$DM_BC_ASTC"/* Gen/dm/bc_astc/ || die "copy BC ASTC cache"
+    t "BC ASTC cache: $(find "$DM_BC_ASTC" -maxdepth 1 -type f | wc -l | tr -d ' ') files"
+  else t "[YELLOW] DM_BC_ASTC: no directory $DM_BC_ASTC; building without the ASTC cache (software BC still works)"
+  fi
+fi
 # App icon: the game's own icon (icon.jpg saved from the control data by nx_extract, the English 256x256 one). DM_ICON can point at another image; by default the icon.jpg next to the RomFS is used.
 # It is scaled to a 1024x1024 PNG in the asset catalog Gen/Assets.xcassets (a single-size app icon; actool generates the other sizes); with neither, no icon is set and the home-screen icon is blank.
 # The catalog is always created (the project always lists it, see project.yml); without an icon it stays empty and DM_APPICON is not set

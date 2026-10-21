@@ -1,5 +1,5 @@
 // iOS App entry: set the environment (game files, saves, shader libraries), write the host log to Documents/log.txt, create the window (front_ios.m), then run the host's dm_main on a big-stack thread.
-// The game files (RomFS) can be in the App at <App>/romfs (all-in-one IPA) or in Documents/romfs placed through the Files app (split IPA, which is the default; Documents is checked first).
+// The game files (RomFS) ship inside the App at <App>/romfs, or in Documents/romfs placed through the Files app (the split IPA that A16=1 builds by default).
 #import <UIKit/UIKit.h>
 #include <pthread.h>
 #include <signal.h>
@@ -58,7 +58,7 @@ static int boot_env(void) {
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
     setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
-    setenv("DM_NVN_BC_ASTC", [dm stringByAppendingPathComponent:@"bc_astc"].fileSystemRepresentation, 0);   // offline BC → ASTC cache (A16 / 6 GB)
+    setenv("DM_NVN_BC_ASTC", [dm stringByAppendingPathComponent:@"bc_astc"].fileSystemRepresentation, 0);   // optional offline BC → ASTC cache for A16 / older GPUs (build_ipa.sh A16=1)
     NSString *aoc = [res stringByAppendingPathComponent:@"aoc"];   // add-on content: build_ipa.sh puts the RomFS extracted from the player's DLC NSPs at <App>/aoc/<index>/
     if ([fm fileExistsAtPath:aoc]) setenv("DM_AOC_DIR", aoc.fileSystemRepresentation, 0);
     chdir(doc.fileSystemRepresentation);

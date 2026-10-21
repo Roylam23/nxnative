@@ -22,6 +22,7 @@ typedef struct {
     double debt;              // real time the game is behind, in vsyncs
     int late_run, fit_run, trial;   // late frames in a row; frames in a row whose cost fits k − 1; frames left of a trial at k − 1 (0 = none)
     double hold, since;       // vsyncs a trial waits for after a step up; vsyncs since the last step up
+    double shown_slack;       // vsyncs a frame on time may show longer than k (set by the caller): one refresh on screens whose rate is not a multiple of 60; the cost keeps FSTEP_LATE
     uint64_t late, paid, ups, downs, failed; double dropped;   // statistics for the log
 } nvn_fstep;
 
@@ -48,7 +49,7 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
     if (kmin < s->kmin || s->k < kmin) s->k = kmin;   // the cap rose (a movie or the game's own step ended) or fell
     if (s->k > kmax) s->k = kmax;
     s->kmin = kmin;
-    int late = shown > held + FSTEP_LATE || cost > held + FSTEP_LATE;
+    int late = shown > held + FSTEP_LATE + s->shown_slack || cost > held + FSTEP_LATE;
     if (late) { s->late++; s->late_run++; s->fit_run = 0; } else s->late_run = 0;
     if (s->late_run >= 3 && s->k < kmax) {   // step up to the cost, at least one vsync
         int want = (int)ceil(cost - 0.05);
